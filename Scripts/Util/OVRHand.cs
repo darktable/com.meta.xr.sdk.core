@@ -187,8 +187,8 @@ public class OVRHand : MonoBehaviour,
     private void InitializePointerPose()
     {
         _pointerPoseGO = new GameObject($"{HandType} {nameof(PointerPose)}");
-        DontDestroyOnLoad(_pointerPoseGO);
-        _pointerPoseGO.hideFlags = HideFlags.HideAndDontSave;
+        _pointerPoseGO.hideFlags = HideFlags.DontSave;
+
         if (_pointerPoseRoot != null)
         {
             PointerPose.SetParent(_pointerPoseRoot, false);
@@ -197,6 +197,11 @@ public class OVRHand : MonoBehaviour,
 
     private void Awake()
     {
+        if (_pointerPoseRoot == null)
+        {
+            _pointerPoseRoot = OVRCameraRig.GetTrackingSpace();
+        }
+
         if (_pointerPoseGO == null)
         {
             InitializePointerPose();
@@ -258,8 +263,8 @@ public class OVRHand : MonoBehaviour,
             IsSystemGestureInProgress = (_handState.Status & OVRPlugin.HandStatus.SystemGestureInProgress) != 0;
             IsPointerPoseValid = (_handState.Status & OVRPlugin.HandStatus.InputStateValid) != 0;
             IsDominantHand = (_handState.Status & OVRPlugin.HandStatus.DominantHand) != 0;
-            PointerPose.localPosition = _handState.PointerPose.Position.FromFlippedZVector3f();
-            PointerPose.localRotation = _handState.PointerPose.Orientation.FromFlippedZQuatf();
+            PointerPose.SetLocalPositionAndRotation(_handState.PointerPose.Position.FromFlippedZVector3f(),
+                _handState.PointerPose.Orientation.FromFlippedZQuatf());
             HandScale = _handState.HandScale;
             HandConfidence = (TrackingConfidence)_handState.HandConfidence;
 
@@ -321,8 +326,7 @@ public class OVRHand : MonoBehaviour,
             IsTracked = false;
             IsSystemGestureInProgress = false;
             IsPointerPoseValid = false;
-            PointerPose.localPosition = Vector3.zero;
-            PointerPose.localRotation = Quaternion.identity;
+            PointerPose.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
             HandScale = 1.0f;
             HandConfidence = TrackingConfidence.Low;
 
@@ -559,6 +563,15 @@ public class OVRHand : MonoBehaviour,
                 mesh.SetMeshType(HandType.AsMeshType(GlobalHandSkeletonVersion));
             }
         }
+
+        if (_pointerPoseRoot == null)
+        {
+            var cameraRig = GetComponentInParent<OVRCameraRig>(true);
+            if (cameraRig != null)
+            {
+                _pointerPoseRoot = cameraRig.trackingSpace;
+            }
+        }
     }
 
     /// <summary>
@@ -583,7 +596,6 @@ public class OVRHand : MonoBehaviour,
     /// </summary>
     public Transform GetPointerRayTransform()
     {
-        PointerPose.name = name;
         return PointerPose;
     }
 
