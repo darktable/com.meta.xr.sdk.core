@@ -345,7 +345,7 @@ public partial class OVRUnityHumanoidSkeletonRetargeter
             }
         }
 
-        private static OVRBone FindBoneWithBoneId(IList<OVRBone> bones, BoneId boneId)
+        private static OVRBone FindBoneWithBoneId(IReadOnlyList<OVRBone> bones, BoneId boneId)
         {
             for (var i = 0; i < bones.Count; i++)
             {

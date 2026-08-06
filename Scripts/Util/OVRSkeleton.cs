@@ -19,6 +19,7 @@
  */
 
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 using UnityEngine.Assertions;
 
@@ -406,15 +407,18 @@ public class OVRSkeleton : MonoBehaviour
     private bool _enablePhysicsCapsules = false;
 
     [SerializeField]
+    private bool _enableBindPoses = false;
+
+    [SerializeField]
     private bool _applyBoneTranslations = true;
 
     private GameObject _bonesGO;
     private GameObject _bindPosesGO;
     private GameObject _capsulesGO;
 
-    protected List<OVRBone> _bones;
-    private List<OVRBone> _bindPoses;
-    private List<OVRBoneCapsule> _capsules;
+    protected readonly List<OVRBone> _bones = new List<OVRBone>((int) BoneId.Max);
+    private readonly List<OVRBone> _bindPoses = new List<OVRBone>((int) BoneId.Max);
+    private readonly List<OVRBoneCapsule> _capsules = new List<OVRBoneCapsule>((int) BoneId.Max);
 
     protected OVRPlugin.Skeleton2 _skeleton = new OVRPlugin.Skeleton2();
     private readonly Quaternion wristFixupRotation = new Quaternion(0.0f, 1.0f, 0.0f, 0.0f);
@@ -438,21 +442,24 @@ public class OVRSkeleton : MonoBehaviour
     /// if the skeletal data can be used or not.
     /// </summary>
     public bool IsDataHighConfidence { get; private set; }
+
     /// <summary>
     /// The current bones associated with the skeleton. Use this field to update any GameObjects that
     /// track skeletal bones.
     /// </summary>
-    public IList<OVRBone> Bones { get; protected set; }
+    public IReadOnlyList<OVRBone> Bones => _bones;
+
     /// <summary>
     /// The bones of the bind pose associated with the skeleton. Use this to understand
     /// the bind pose of the skeleton based on the last update of it.
     /// </summary>
-    public IList<OVRBone> BindPoses { get; private set; }
+    public IReadOnlyList<OVRBone> BindPoses => _bindPoses;
+
     /// <summary>
     /// The bone capsules objects associated with the skeleton's bones, assuming that physics
     /// capsules have been created.
     /// </summary>
-    public IList<OVRBoneCapsule> Capsules { get; private set; }
+    public IReadOnlyList<OVRBoneCapsule> Capsules => _capsules;
 
     /// <summary>
     /// The skeleton type associated with this instance. This could be hand,
@@ -521,15 +528,6 @@ public class OVRSkeleton : MonoBehaviour
                 }
             }
         }
-
-        _bones = new List<OVRBone>();
-        Bones = _bones.AsReadOnly();
-
-        _bindPoses = new List<OVRBone>();
-        BindPoses = _bindPoses.AsReadOnly();
-
-        _capsules = new List<OVRBoneCapsule>();
-        Capsules = _capsules.AsReadOnly();
     }
 
     internal IOVRSkeletonDataProvider SearchSkeletonDataProvider()
@@ -616,19 +614,15 @@ public class OVRSkeleton : MonoBehaviour
             _bonesGO.transform.localRotation = Quaternion.identity;
         }
 
-        if (_bones == null || _bones.Count != _skeleton.NumBones)
+        if (_bones.Count != _skeleton.NumBones)
         {
-            if (_bones != null)
+            for (int i = 0; i < _bones.Count; i++)
             {
-                for (int i = 0; i < _bones.Count; i++)
-                {
-                    _bones[i].Dispose();
-                }
-                _bones.Clear();
+                _bones[i].Dispose();
             }
+            _bones.Clear();
 
-            _bones = new List<OVRBone>(new OVRBone[_skeleton.NumBones]);
-            Bones = _bones.AsReadOnly();
+            _bones.AddRange(new OVRBone[_skeleton.NumBones]);
         }
 
         bool newBonesCreated = false;
@@ -695,6 +689,11 @@ public class OVRSkeleton : MonoBehaviour
 
     protected virtual void InitializeBindPose()
     {
+        if (!_enableBindPoses)
+        {
+            return;
+        }
+
         if (!_bindPosesGO)
         {
             _bindPosesGO = new GameObject("BindPoses");
@@ -703,14 +702,11 @@ public class OVRSkeleton : MonoBehaviour
             _bindPosesGO.transform.localRotation = Quaternion.identity;
         }
 
-        if (_bindPoses != null)
+        for (int i = 0; i < _bindPoses.Count; i++)
         {
-            for (int i = 0; i < _bindPoses.Count; i++)
-            {
-                _bindPoses[i].Dispose();
-            }
-            _bindPoses.Clear();
+            _bindPoses[i].Dispose();
         }
+        _bindPoses.Clear();
 
         // Clear previous bind pose objects.
         // To prevent them lingering when you change skeleton version.
@@ -728,10 +724,9 @@ public class OVRSkeleton : MonoBehaviour
             }
         }
 
-        if (_bindPoses == null || _bindPoses.Count != _bones.Count)
+        if (_bindPoses.Count != _bones.Count)
         {
-            _bindPoses = new List<OVRBone>(new OVRBone[_bones.Count]);
-            BindPoses = _bindPoses.AsReadOnly();
+            _bindPoses.AddRange(new OVRBone[_bones.Count]);
         }
 
         // pre-populate bones list before attempting to apply bone hierarchy
@@ -766,82 +761,80 @@ public class OVRSkeleton : MonoBehaviour
 
     private void InitializeCapsules()
     {
+        if (!_enablePhysicsCapsules)
+        {
+            return;
+        }
+
         bool flipX = _skeletonType.IsOVRHandSkeleton();
 
-        if (_enablePhysicsCapsules)
+        if (!_capsulesGO)
         {
-            if (!_capsulesGO)
+            _capsulesGO = new GameObject("Capsules");
+            _capsulesGO.transform.SetParent(transform, false);
+            _capsulesGO.transform.localPosition = Vector3.zero;
+            _capsulesGO.transform.localRotation = Quaternion.identity;
+        }
+
+        for (int i = 0; i < _capsules.Count; i++)
+        {
+            _capsules[i].Cleanup();
+        }
+        _capsules.Clear();
+
+        if (_capsules.Count != _skeleton.NumBoneCapsules)
+        {
+            _capsules.AddRange(new OVRBoneCapsule[_skeleton.NumBoneCapsules]);
+        }
+
+        for (int i = 0; i < _capsules.Count; ++i)
+        {
+            OVRBone bone = _bones[_skeleton.BoneCapsules[i].BoneIndex];
+            OVRBoneCapsule capsule = _capsules[i] ?? (_capsules[i] = new OVRBoneCapsule());
+            capsule.BoneIndex = _skeleton.BoneCapsules[i].BoneIndex;
+
+            if (capsule.CapsuleRigidbody == null)
             {
-                _capsulesGO = new GameObject("Capsules");
-                _capsulesGO.transform.SetParent(transform, false);
-                _capsulesGO.transform.localPosition = Vector3.zero;
-                _capsulesGO.transform.localRotation = Quaternion.identity;
+                capsule.CapsuleRigidbody =
+                    new GameObject(BoneLabelFromBoneId(_skeletonType, bone.Id) + "_CapsuleRigidbody")
+                        .AddComponent<Rigidbody>();
+                capsule.CapsuleRigidbody.mass = 1.0f;
+                capsule.CapsuleRigidbody.isKinematic = true;
+                capsule.CapsuleRigidbody.useGravity = false;
+                capsule.CapsuleRigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
             }
 
-            if (_capsules != null)
+            GameObject rbGO = capsule.CapsuleRigidbody.gameObject;
+            rbGO.transform.SetParent(_capsulesGO.transform, false);
+            rbGO.transform.position = bone.Transform.position;
+            rbGO.transform.rotation = bone.Transform.rotation;
+
+            if (capsule.CapsuleCollider == null)
             {
-                for (int i = 0; i < _capsules.Count; i++)
-                {
-                    _capsules[i].Cleanup();
-                }
-                _capsules.Clear();
+                capsule.CapsuleCollider =
+                    new GameObject(BoneLabelFromBoneId(_skeletonType, bone.Id) + "_CapsuleCollider")
+                        .AddComponent<CapsuleCollider>();
+                capsule.CapsuleCollider.isTrigger = false;
             }
 
-            if (_capsules == null || _capsules.Count != _skeleton.NumBoneCapsules)
-            {
-                _capsules = new List<OVRBoneCapsule>(new OVRBoneCapsule[_skeleton.NumBoneCapsules]);
-                Capsules = _capsules.AsReadOnly();
-            }
+            var p0 = flipX
+                ? _skeleton.BoneCapsules[i].StartPoint.FromFlippedXVector3f()
+                : _skeleton.BoneCapsules[i].StartPoint.FromFlippedZVector3f();
+            var p1 = flipX
+                ? _skeleton.BoneCapsules[i].EndPoint.FromFlippedXVector3f()
+                : _skeleton.BoneCapsules[i].EndPoint.FromFlippedZVector3f();
+            var delta = p1 - p0;
+            var mag = delta.magnitude;
+            var rot = Quaternion.FromToRotation(Vector3.right, delta);
+            capsule.CapsuleCollider.radius = _skeleton.BoneCapsules[i].Radius;
+            capsule.CapsuleCollider.height = mag + _skeleton.BoneCapsules[i].Radius * 2.0f;
+            capsule.CapsuleCollider.direction = 0;
+            capsule.CapsuleCollider.center = Vector3.right * (mag * 0.5f);
 
-            for (int i = 0; i < _capsules.Count; ++i)
-            {
-                OVRBone bone = _bones[_skeleton.BoneCapsules[i].BoneIndex];
-                OVRBoneCapsule capsule = _capsules[i] ?? (_capsules[i] = new OVRBoneCapsule());
-                capsule.BoneIndex = _skeleton.BoneCapsules[i].BoneIndex;
-
-                if (capsule.CapsuleRigidbody == null)
-                {
-                    capsule.CapsuleRigidbody =
-                        new GameObject(BoneLabelFromBoneId(_skeletonType, bone.Id) + "_CapsuleRigidbody")
-                            .AddComponent<Rigidbody>();
-                    capsule.CapsuleRigidbody.mass = 1.0f;
-                    capsule.CapsuleRigidbody.isKinematic = true;
-                    capsule.CapsuleRigidbody.useGravity = false;
-                    capsule.CapsuleRigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
-                }
-
-                GameObject rbGO = capsule.CapsuleRigidbody.gameObject;
-                rbGO.transform.SetParent(_capsulesGO.transform, false);
-                rbGO.transform.position = bone.Transform.position;
-                rbGO.transform.rotation = bone.Transform.rotation;
-
-                if (capsule.CapsuleCollider == null)
-                {
-                    capsule.CapsuleCollider =
-                        new GameObject(BoneLabelFromBoneId(_skeletonType, bone.Id) + "_CapsuleCollider")
-                            .AddComponent<CapsuleCollider>();
-                    capsule.CapsuleCollider.isTrigger = false;
-                }
-
-                var p0 = flipX
-                    ? _skeleton.BoneCapsules[i].StartPoint.FromFlippedXVector3f()
-                    : _skeleton.BoneCapsules[i].StartPoint.FromFlippedZVector3f();
-                var p1 = flipX
-                    ? _skeleton.BoneCapsules[i].EndPoint.FromFlippedXVector3f()
-                    : _skeleton.BoneCapsules[i].EndPoint.FromFlippedZVector3f();
-                var delta = p1 - p0;
-                var mag = delta.magnitude;
-                var rot = Quaternion.FromToRotation(Vector3.right, delta);
-                capsule.CapsuleCollider.radius = _skeleton.BoneCapsules[i].Radius;
-                capsule.CapsuleCollider.height = mag + _skeleton.BoneCapsules[i].Radius * 2.0f;
-                capsule.CapsuleCollider.direction = 0;
-                capsule.CapsuleCollider.center = Vector3.right * mag * 0.5f;
-
-                GameObject ccGO = capsule.CapsuleCollider.gameObject;
-                ccGO.transform.SetParent(rbGO.transform, false);
-                ccGO.transform.localPosition = p0;
-                ccGO.transform.localRotation = rot;
-            }
+            GameObject ccGO = capsule.CapsuleCollider.gameObject;
+            ccGO.transform.SetParent(rbGO.transform, false);
+            ccGO.transform.localPosition = p0;
+            ccGO.transform.localRotation = rot;
         }
     }
 
@@ -874,14 +867,12 @@ public class OVRSkeleton : MonoBehaviour
             return;
         }
 
-
         if (SkeletonChangedCount != data.SkeletonChangedCount)
         {
             SkeletonChangedCount = data.SkeletonChangedCount;
             IsInitialized = false;
             Initialize();
         }
-
 
         IsDataHighConfidence = data.IsDataHighConfidence;
 
@@ -1605,7 +1596,7 @@ public class OVRBone : System.IDisposable
     /// The transform that is created at runtime. Use this to track the
     /// pose of the character's bone.
     /// </summary>
-    public Transform Transform { get; set; }
+    public Transform Transform { [MethodImpl(MethodImplOptions.AggressiveInlining)] get; set; }
 
     /// <summary>
     /// OVRBone constructor which does not require joint data as arguments,
