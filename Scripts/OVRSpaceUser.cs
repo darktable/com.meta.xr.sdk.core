@@ -36,7 +36,7 @@
 /// an <see cref="OVRSpaceUser"/> from the user id of an Oculus user obtained from the
 /// [Platform SDK](https://developer.oculus.com/documentation/unity/ps-platform-intro/).
 /// </remarks>
-public struct OVRSpaceUser : System.IDisposable
+public struct OVRSpaceUser : System.IDisposable, System.IEquatable<OVRSpaceUser>
 {
     /// <summary>
     /// Tries to create a handle to a specific Oculus user in the current conceptual space.
@@ -161,5 +161,25 @@ public struct OVRSpaceUser : System.IDisposable
 
 
     internal ulong _handle;
+
+    public bool Equals(OVRSpaceUser other)
+    {
+        return _handle == other._handle;
+    }
+
+    public override bool Equals(object obj)
+    {
+        return obj is OVRSpaceUser other && Equals(other);
+    }
+
+    public override int GetHashCode()
+    {
+        return _handle.GetHashCode();
+    }
+
+    public override string ToString()
+    {
+        return _handle.ToString();
+    }
 
 }

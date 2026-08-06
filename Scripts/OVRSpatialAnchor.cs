@@ -1676,6 +1676,11 @@ public partial class OVRSpatialAnchor : MonoBehaviour
             task.ContinueWith(s_delegate, new InvertedCapture<TResult, TCapture>(onCompleted, state));
         }
     }
+
+    public override string ToString()
+    {
+        return Uuid.ToString();
+    }
 }
 
 /// <summary>
