@@ -182,6 +182,8 @@ namespace Meta.XR.EnvironmentDepth
                 _depthTextures[nativeTexture] = (depthTextureData.textureId, depthTexture);
             }
 
+            frame.TryGetTimestamp(out var timestamp);
+
             for (int i = 0; i < frameDescriptors.Length; i++)
             {
                 frameDescriptors[i] = new DepthFrameDesc
@@ -193,7 +195,8 @@ namespace Meta.XR.EnvironmentDepth
                     fovTopAngleTangent = Mathf.Tan(Mathf.Abs(fovs[i].angleUp)),
                     fovDownAngleTangent = Mathf.Tan(Mathf.Abs(fovs[i].angleDown)),
                     nearZ = nearFarPlanes.nearZ,
-                    farZ = nearFarPlanes.farZ
+                    farZ = nearFarPlanes.farZ,
+                    timestamp = timestamp
                 };
             }
             return true;

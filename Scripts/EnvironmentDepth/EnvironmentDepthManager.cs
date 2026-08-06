@@ -115,14 +115,18 @@ namespace Meta.XR.EnvironmentDepth
         /// <summary>
         /// A list of mesh filters to be used with the Depth Masking feature. If this list is left empty, the feature is disabled.
         /// </summary>
-        [field: SerializeField] public List<MeshFilter> MaskMeshFilters { get; set; } = new List<MeshFilter>();
+        public List<MeshFilter> MaskMeshFilters => _maskMeshFilters;
+
+        [SerializeField]
+        private List<MeshFilter> _maskMeshFilters = new List<MeshFilter>();
 
         private static IDepthProvider _provider;
         private bool _hasPermission;
         private Material _preprocessMaterial;
         [CanBeNull] private RenderTexture _preprocessTexture;
         private RenderTargetSetup _preprocessRenderTargetSetup;
-        internal event Action<RenderTexture> onDepthTextureUpdate;
+        public event Action<RenderTexture> onDepthTextureUpdate;
+        public event Action<long> onBeforeRenderEvent;
         internal readonly DepthFrameDesc[] frameDescriptors = new DepthFrameDesc[numViews];
 
         private float _maskBias = 0.1f;
@@ -229,15 +233,22 @@ namespace Meta.XR.EnvironmentDepth
 
         private readonly Matrix4x4[] _reprojectionMatrices = new Matrix4x4[numViews];
 
+        private readonly Matrix4x4[] _depthProj = new Matrix4x4[numViews];
+        private readonly Matrix4x4[] _depthProjInv = new Matrix4x4[numViews];
+
+        private readonly Matrix4x4[] _rawDepthView = new Matrix4x4[numViews];
+        private readonly Matrix4x4[] _depthView = new Matrix4x4[numViews];
+        private readonly Matrix4x4[] _depthViewInv = new Matrix4x4[numViews];
+
         private void Awake()
         {
-            Assert.AreEqual(1, FindObjectsByType<EnvironmentDepthManager>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
+            Assert.AreEqual(1, FindObjectsByType<EnvironmentDepthManager>(FindObjectsInactive.Include).Length,
                 $"Environment Depth: more than one {nameof(EnvironmentDepthManager)} component. Only one instance is allowed at a time. Current instance: {name}");
             if (!IsSupported)
             {
 #if UNITY_EDITOR
                 if((!Application.isBatchMode) &&
-                    (OVRPlugin.initialized)) // We're in Link or XRSim                
+                    (OVRPlugin.initialized)) // We're in Link or XRSim
                     {
                         Debug.LogError("Environment Depth could not be retrieved! Please ensure the following:" +
                                        "\n\n" +
@@ -248,7 +259,7 @@ namespace Meta.XR.EnvironmentDepth
                                        " (Meta > Tools > Project Setup Tool)" +
                                        "\n\n" +
                                        "You are using a Quest 3 or newer device.");
-                    }                
+                    }
 #endif
                 return;
             }
@@ -332,9 +343,14 @@ namespace Meta.XR.EnvironmentDepth
 
             for (int i = 0; i < numViews; i++)
             {
-                _reprojectionMatrices[i] = EnvironmentDepthUtils.CalculateReprojection(frameDescriptors[i]) * trackingSpaceWorldToLocal;
+                _depthView[i] = _rawDepthView[i] * trackingSpaceWorldToLocal;
+                _depthViewInv[i] = Matrix4x4.Inverse(_depthView[i]);
+                _reprojectionMatrices[i] = (_depthProj[i] * _rawDepthView[i]) * trackingSpaceWorldToLocal;
             }
+
             Shader.SetGlobalMatrixArray(ReprojectionMatricesID, _reprojectionMatrices);
+
+            onBeforeRenderEvent?.Invoke(leftEyeData.timestamp);
         }
 
         private static void SetOcclusionShaderKeywords(OcclusionShadersMode mode)
@@ -373,10 +389,15 @@ namespace Meta.XR.EnvironmentDepth
 
             Assert.IsTrue(depthTexture.IsCreated(), "depthTexture.IsCreated()");
             onDepthTextureUpdate?.Invoke(depthTexture);
-            if (MaskMeshFilters != null && MaskMeshFilters.Count > 0)
+            for (int i = 0; i < numViews; i++)
+            {
+                EnvironmentDepthUtils.CalculateDepthCameraMatrices(frameDescriptors[i], out _depthProj[i], out _rawDepthView[i]);
+                _depthProjInv[i] = Matrix4x4.Inverse(_depthProj[i]);
+            }
+            if (_maskMeshFilters.Count > 0)
             {
                 _mask ??= new Mask(depthTexture.width, depthTexture.height, _maskBias);
-                depthTexture = _mask.ApplyMask(depthTexture, MaskMeshFilters, trackingSpaceWorldToLocal, frameDescriptors);
+                depthTexture = _mask.ApplyMask(depthTexture, _maskMeshFilters, trackingSpaceWorldToLocal, _depthProj, _rawDepthView);
             }
             Shader.SetGlobalTexture(DepthTextureID, depthTexture);
             if (!IsDepthAvailable)
@@ -386,8 +407,10 @@ namespace Meta.XR.EnvironmentDepth
                     SetOcclusionShaderKeywords(_occlusionShadersMode);
             }
 
+#if !DISABLE_META_DEPTH_PREPROCESSOR
             if (_occlusionShadersMode == OcclusionShadersMode.SoftOcclusion)
                 PreprocessDepthTexture(depthTexture);
+#endif
         }
 
         internal Matrix4x4 GetTrackingSpaceWorldToLocalMatrix()
@@ -432,11 +455,10 @@ namespace Meta.XR.EnvironmentDepth
                 _maskCommandBuffer = new CommandBuffer();
             }
 
-            internal RenderTexture ApplyMask(RenderTexture depthTexture, List<MeshFilter> meshFilters, Matrix4x4 trackingSpaceWorldToLocal, DepthFrameDesc[] frameDescriptors)
+            internal RenderTexture ApplyMask(RenderTexture depthTexture, ICollection<MeshFilter> meshFilters, Matrix4x4 trackingSpaceWorldToLocal, Matrix4x4[] depthProj, Matrix4x4[] rawDepthView)
             {
-                // update depth camera proj and view matrices
-                EnvironmentDepthUtils.CalculateDepthCameraMatrices(frameDescriptors[0], out var proj0, out var view0);
-                EnvironmentDepthUtils.CalculateDepthCameraMatrices(frameDescriptors[1], out var proj1, out var view1);
+                var vp0 = GL.GetGPUProjectionMatrix(depthProj[0], true) * rawDepthView[0] * trackingSpaceWorldToLocal;
+                var vp1 = GL.GetGPUProjectionMatrix(depthProj[1], true) * rawDepthView[1] * trackingSpaceWorldToLocal;
 
                 // render mask's depth into _maskDepthRt
                 _maskCommandBuffer.SetRenderTarget(new RenderTargetIdentifier(_maskDepthRt, 0, CubemapFace.Unknown, -1),
@@ -451,8 +473,8 @@ namespace Meta.XR.EnvironmentDepth
                         Debug.LogError($"{nameof(MeshFilter)} or {nameof(MeshFilter.sharedMesh)} is null.");
                         continue;
                     }
-                    _mvpMatrices[0] = GL.GetGPUProjectionMatrix(proj0, true) * view0 * trackingSpaceWorldToLocal * meshFilter.transform.localToWorldMatrix;
-                    _mvpMatrices[1] = GL.GetGPUProjectionMatrix(proj1, true) * view1 * trackingSpaceWorldToLocal * meshFilter.transform.localToWorldMatrix;
+                    _mvpMatrices[0] = vp0 * meshFilter.transform.localToWorldMatrix;
+                    _mvpMatrices[1] = vp1 * meshFilter.transform.localToWorldMatrix;
                     _maskCommandBuffer.SetGlobalMatrixArray(MvpMatricesID, _mvpMatrices);
                     _maskCommandBuffer.DrawMeshInstancedProcedural(meshFilter.sharedMesh, 0, _maskMaterial, 0, numViews);
                 }
@@ -513,6 +535,23 @@ namespace Meta.XR.EnvironmentDepth
 
         [Conditional("UNITY_ASSERTIONS")]
         private static void Log(LogType type, string msg) => Debug.unityLogger.Log(type, msg);
+
+        public IReadOnlyList<DepthFrameDesc> GetFrameDescriptors()
+        {
+            return frameDescriptors;
+        }
+
+        public void GetProjectionMatrices(out Matrix4x4[] mat, out Matrix4x4[] inv)
+        {
+            mat = _depthProj;
+            inv = _depthProjInv;
+        }
+
+        public void GetViewMatrices(out Matrix4x4[] mat, out Matrix4x4[] inv)
+        {
+            mat = _depthView;
+            inv = _depthViewInv;
+        }
     }
 
     internal interface IDepthProvider
@@ -531,16 +570,17 @@ namespace Meta.XR.EnvironmentDepth
         bool IDepthProvider.TryGetUpdatedDepthTexture(out RenderTexture depthTexture, DepthFrameDesc[] frameDescriptors) => throw new NotSupportedException();
     }
 
-    internal struct DepthFrameDesc
+    public struct DepthFrameDesc
     {
-        internal Vector3 createPoseLocation;
-        internal Quaternion createPoseRotation;
+        public Vector3 createPoseLocation;
+        public Quaternion createPoseRotation;
         /// This is an absolute value of angle's tangent. For example, given the 'angle' in radians, <see cref="fovLeftAngleTangent"/> can be calculated as 'tan(abs(angle))'.
-        internal float fovLeftAngleTangent;
-        internal float fovRightAngleTangent;
-        internal float fovTopAngleTangent;
-        internal float fovDownAngleTangent;
-        internal float nearZ;
-        internal float farZ;
+        public float fovLeftAngleTangent;
+        public float fovRightAngleTangent;
+        public float fovTopAngleTangent;
+        public float fovDownAngleTangent;
+        public float nearZ;
+        public float farZ;
+        public long timestamp;
     }
 }
