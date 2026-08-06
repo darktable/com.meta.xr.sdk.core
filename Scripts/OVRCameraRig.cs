@@ -150,10 +150,22 @@ public class OVRCameraRig : MonoBehaviour
         }
     }
 
-    internal static Transform GetTrackingSpace()
+    private static Transform s_TrackingSpace;
+
+    public static Transform GetTrackingSpace()
     {
-        var instance = Instance;
-        return instance ? instance.trackingSpace : null;
+        if (s_TrackingSpace == null)
+        {
+            var instance = Instance;
+            s_TrackingSpace = instance ? instance.trackingSpace : null;
+        }
+
+        return s_TrackingSpace;
+    }
+
+    public static void SetTrackingSpace(Transform trackingSpace)
+    {
+        s_TrackingSpace = trackingSpace;
     }
 
     /// <summary>
