@@ -39,7 +39,7 @@ namespace Meta.XR.AI.AgentBridge
     /// Ported from MCPProxy to Unity.
     /// </summary>
     [RegisterAIService(ServiceId, "Claude Code", Priority = 0, ExecutableName = "claude", SkillsSubPath = ".claude/skills")]
-    public class ClaudeCodeService : AIServiceBase, IServiceSettingsUI, IServiceValidation
+    public class ClaudeCodeService : AIServiceBase, IServiceSettingsUI, IServiceValidation, IServiceCommandLineArguments, IServiceCommandLineArgumentsValidation
     {
         /// <summary>
         /// The unique service identifier for Claude Code.
@@ -47,6 +47,7 @@ namespace Meta.XR.AI.AgentBridge
         public const string ServiceId = "claudecode";
 
         private const int ValidationTimeoutSeconds = 10;
+        private const int ExecutionTimeoutMinutes = 10;
         /// <summary>
         /// Settings specific to Claude Code service.
         /// Co-located with service implementation for better maintainability.
@@ -65,6 +66,16 @@ namespace Meta.XR.AI.AgentBridge
                 SendTelemetry = false
             };
 
+            internal static readonly UserString AdditionalArguments = new UserString
+            {
+                Uid = nameof(AdditionalArguments),
+                Owner = Owner,
+                Default = "",
+                Label = "Additional Arguments",
+                Tooltip = "Arguments appended to the Claude Code CLI command.",
+                SendTelemetry = false
+            };
+
             private class ClaudeCodeDescriptor : IIdentified
             {
                 public string Id => "AgentBridge.ClaudeCode";
@@ -77,6 +88,7 @@ namespace Meta.XR.AI.AgentBridge
         private bool _cancellationRequested = false;
         private bool _disposed = false;
         private ValidationResult _currentValidationResult = ValidationResult.Unknown();
+        private readonly SemaphoreSlim _validationSemaphore = new(1, 1);
 
         /// <inheritdoc/>
         public override string ServiceName => "Claude Code";
@@ -85,7 +97,27 @@ namespace Meta.XR.AI.AgentBridge
         public override bool HasActiveSession => !string.IsNullOrEmpty(ConversationManager.GetSessionId());
 
         /// <inheritdoc />
-        public ValidationResult CurrentValidationResult => _currentValidationResult;
+        public ValidationResult CurrentValidationResult => CommandLineArguments.ResolveValidationResult(
+            ServiceId,
+            ClaudeCodeSettings.ExecutablePath.Value,
+            AdditionalCommandLineArguments,
+            _currentValidationResult);
+
+        /// <inheritdoc />
+        public string AdditionalCommandLineArguments
+        {
+            get => ClaudeCodeSettings.AdditionalArguments.Value;
+            set
+            {
+                if (value == ClaudeCodeSettings.AdditionalArguments.Value)
+                {
+                    return;
+                }
+
+                ClaudeCodeSettings.AdditionalArguments.SetValue(value);
+                _currentValidationResult = ValidationResult.Unknown();
+            }
+        }
 
         /// <summary>
         /// Constructor - performs startup cleanup of old temp files.
@@ -203,7 +235,7 @@ namespace Meta.XR.AI.AgentBridge
 
             lock (_processLock)
             {
-                if (_currentProcess != null && !_currentProcess.HasExited)
+                if (IsProcessRunning(_currentProcess))
                 {
                     processToKill = _currentProcess;
                     _cancellationRequested = true;
@@ -259,6 +291,8 @@ namespace Meta.XR.AI.AgentBridge
             processStartInfo.ArgumentList.Add("--include-partial-messages");
             processStartInfo.ArgumentList.Add("--verbose");
             processStartInfo.ArgumentList.Add("--dangerously-skip-permissions");
+
+            CommandLineArguments.AppendTo(processStartInfo, AdditionalCommandLineArguments);
 
             var newSession = string.IsNullOrEmpty(currentSessionId);
 
@@ -389,14 +423,17 @@ namespace Meta.XR.AI.AgentBridge
                 process.BeginErrorReadLine();
 
                 // Wait for process to complete with timeout
-                var timeout = TimeSpan.FromMinutes(10); // Configurable timeout
+                var timeout = TimeSpan.FromMinutes(ExecutionTimeoutMinutes);
                 var completed = await Task.Run(() => process.WaitForExit((int)timeout.TotalMilliseconds));
 
                 if (!completed)
                 {
-                    Log.Error("Process timed out");
+                    // Timed out: often a network/firewall stall rather than a long analysis,
+                    // so the message points at connectivity/auth.
                     process.Kill();
-                    throw new TimeoutException($"Claude Code process exceeded {timeout.TotalMinutes} minute timeout");
+                    throw new TimeoutException(
+                        $"Claude Code did not respond within {timeout.TotalMinutes} minutes. " +
+                        "Check your network connection, firewall, and Claude Code authentication.");
                 }
 
                 // Caching the exit code for later use. This is needed because the process is disposed after this method.
@@ -513,6 +550,13 @@ namespace Meta.XR.AI.AgentBridge
                     ExtractAndStoreSessionId(line, caller);
                 }
 
+                // The terminal stream-json "result" event carries cumulative token
+                // usage and cost for the run; capture it for the caller.
+                if (line.Contains("\"type\":\"result\""))
+                {
+                    ExtractAndStoreUsage(line, caller);
+                }
+
                 // Parse conversation content
                 var conversationInfo = GetConversationContent(line);
                 if (conversationInfo.HasContent)
@@ -570,6 +614,44 @@ namespace Meta.XR.AI.AgentBridge
             }
         }
 
+        /// <summary>
+        /// Extract cumulative token/cost usage from the Claude Code stream-json "result"
+        /// event and accumulate it for the given caller. Non-result lines are ignored.
+        /// </summary>
+        private void ExtractAndStoreUsage(string line, CallerIdentity? caller)
+        {
+            try
+            {
+                var json = JsonObject.Parse(line);
+                if (json["type"]?.ToString() != "result")
+                {
+                    return;
+                }
+
+                var usage = json["usage"] as JsonObject;
+                long input = usage?["input_tokens"]?.ToObject<long?>() ?? 0;
+                long output = usage?["output_tokens"]?.ToObject<long?>() ?? 0;
+                long cacheRead = usage?["cache_read_input_tokens"]?.ToObject<long?>() ?? 0;
+                long cacheCreation = usage?["cache_creation_input_tokens"]?.ToObject<long?>() ?? 0;
+                double cost = json["total_cost_usd"]?.ToObject<double?>() ?? 0;
+
+                if (input == 0 && output == 0 && cacheRead == 0 && cacheCreation == 0 && cost == 0)
+                {
+                    return;
+                }
+
+                MainThreadDispatcher.ExecuteOnMainThread(() =>
+                {
+                    ConversationManager.AddUsageForCaller(
+                        caller, input, output, cacheRead, cacheCreation, cost);
+                });
+            }
+            catch
+            {
+                // Ignore parsing errors for usage extraction
+            }
+        }
+
         /// <inheritdoc />
         public override string? GetResumeCommand(string sessionId)
         {
@@ -587,22 +669,26 @@ namespace Meta.XR.AI.AgentBridge
             if (disposing)
             {
                 _executionSemaphore?.Dispose();
+                _validationSemaphore.Dispose();
 
                 lock (_processLock)
                 {
-                    if (_currentProcess != null && !_currentProcess.HasExited)
+                    if (_currentProcess != null)
                     {
                         try
                         {
-                            _currentProcess.Kill();
+                            if (IsProcessRunning(_currentProcess))
+                            {
+                                _currentProcess.Kill();
+                            }
                             _currentProcess.Dispose();
                         }
                         catch (Exception ex)
                         {
                             Log.Warning($"Error disposing process: {ex.Message}");
                         }
+                        _currentProcess = null;
                     }
-                    _currentProcess = null;
                 }
             }
 
@@ -627,7 +713,7 @@ namespace Meta.XR.AI.AgentBridge
         public void DrawSettingsUI(Origins origins, IIdentified originData)
         {
             UnityEditor.EditorGUILayout.LabelField("Claude Code Settings", UnityEditor.EditorStyles.boldLabel);
-            ClaudeCodeSettings.ExecutablePath.DrawForGUI(origins, originData);
+            ClaudeCodeSettings.ExecutablePath.DrawForGUI(origins, originData, OnExecutablePathChanged);
         }
 
         /// <summary>
@@ -636,7 +722,15 @@ namespace Meta.XR.AI.AgentBridge
         public void ResetSettingsToDefaults()
         {
             ClaudeCodeSettings.ExecutablePath.Reset();
+            ClaudeCodeSettings.AdditionalArguments.Reset();
+            OnExecutablePathChanged();
+        }
+
+        private void OnExecutablePathChanged()
+        {
             ClearResolvedExecutablePath();
+            _currentValidationResult = ValidationResult.Unknown();
+            CommandLineArguments.InvalidateValidationResult(ServiceId);
         }
 
         #endregion
@@ -644,18 +738,76 @@ namespace Meta.XR.AI.AgentBridge
         #region IServiceValidation Implementation
 
         /// <inheritdoc />
-        public async Task<ValidationResult> ValidateConfigurationAsync()
+        public Task<ValidationResult> ValidateConfigurationAsync()
         {
-            _currentValidationResult = ValidationResult.Validating();
+            return ValidateConfigurationAsync(false);
+        }
 
+        /// <inheritdoc />
+        public async Task<ValidationResult> ValidateCommandLineArgumentsAsync()
+        {
+            var result = await ValidateConfigurationAsync(true);
+            return CommandLineArguments.RecordValidationResult(
+                ServiceId,
+                ClaudeCodeSettings.ExecutablePath.Value,
+                AdditionalCommandLineArguments,
+                result);
+        }
+
+        private async Task<ValidationResult> ValidateConfigurationAsync(bool validateCommandLineArguments)
+        {
+            if (!await _validationSemaphore.WaitAsync(CommandLineArguments.ValidationQueueTimeoutMilliseconds))
+            {
+                return CommandLineArguments.ValidationAlreadyInProgress();
+            }
             try
             {
+                _currentValidationResult = ValidationResult.Validating();
                 var configuredPath = ClaudeCodeSettings.ExecutablePath.Value;
+
+                if (!CommandLineArguments.TryParse(
+                        AdditionalCommandLineArguments,
+                        out var additionalArguments,
+                        out var argumentError))
+                {
+                    _currentValidationResult = ValidationResult.Invalid(argumentError);
+                    return _currentValidationResult;
+                }
 
                 // Check if the executable exists (if a specific path is provided)
                 if (!string.IsNullOrEmpty(configuredPath) && !File.Exists(configuredPath))
                 {
                     _currentValidationResult = ValidationResult.Invalid($"Executable not found: {configuredPath}");
+                    return _currentValidationResult;
+                }
+
+                if (validateCommandLineArguments && additionalArguments.Count > 0)
+                {
+                    var smokeTest = new ProcessStartInfo
+                    {
+                        FileName = ResolveExecutable(configuredPath, "claude"),
+                        UseShellExecute = false,
+                        RedirectStandardInput = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    };
+                    smokeTest.ArgumentList.Add("-p");
+                    smokeTest.ArgumentList.Add("--output-format");
+                    smokeTest.ArgumentList.Add("stream-json");
+                    smokeTest.ArgumentList.Add("--include-partial-messages");
+                    smokeTest.ArgumentList.Add("--verbose");
+                    smokeTest.ArgumentList.Add("--dangerously-skip-permissions");
+                    foreach (var argument in additionalArguments)
+                    {
+                        smokeTest.ArgumentList.Add(argument);
+                    }
+                    ApplyLoginShellPath(smokeTest);
+
+                    _currentValidationResult = await CommandLineArguments.RunSmokeTestAsync(
+                        smokeTest,
+                        "Claude Code",
+                        CommandLineArguments.ValidationPrompt);
                     return _currentValidationResult;
                 }
 
@@ -675,6 +827,7 @@ namespace Meta.XR.AI.AgentBridge
 
                 using var process = new Process { StartInfo = processStartInfo };
                 var outputBuilder = new StringBuilder();
+                var errorBuilder = new StringBuilder();
 
                 process.Start();
 
@@ -696,6 +849,14 @@ namespace Meta.XR.AI.AgentBridge
                         // Ignore read errors
                     }
                 });
+                var errorTask = Task.Run(() =>
+                {
+                    try
+                    {
+                        errorBuilder.Append(process.StandardError.ReadToEnd());
+                    }
+                    catch { }
+                });
 
                 var waitTask = Task.Run(() =>
                 {
@@ -713,13 +874,13 @@ namespace Meta.XR.AI.AgentBridge
 
                 if (!completed)
                 {
-                    try { process.Kill(); } catch { }
+                    CommandLineArguments.KillProcessTree(process);
                     _currentValidationResult = ValidationResult.Error("Claude CLI timed out");
                     return _currentValidationResult;
                 }
 
                 // Wait a short time for read task to complete after process exits
-                await Task.WhenAny(readTask, Task.Delay(500));
+                await Task.WhenAny(Task.WhenAll(readTask, errorTask), Task.Delay(500));
 
                 if (process.ExitCode == 0)
                 {
@@ -732,7 +893,9 @@ namespace Meta.XR.AI.AgentBridge
                 }
                 else
                 {
-                    _currentValidationResult = ValidationResult.Invalid("Claude CLI not found or not configured");
+                    _currentValidationResult = ValidationResult.Invalid(CommandLineArguments.GetValidationError(
+                        errorBuilder.ToString(),
+                        "Claude CLI not found or not configured"));
                 }
             }
             catch (System.ComponentModel.Win32Exception)
@@ -742,6 +905,10 @@ namespace Meta.XR.AI.AgentBridge
             catch (Exception ex)
             {
                 _currentValidationResult = ValidationResult.Error($"Validation error: {ex.Message}");
+            }
+            finally
+            {
+                _validationSemaphore.Release();
             }
 
             return _currentValidationResult;

@@ -54,8 +54,8 @@ namespace Meta.XR.Simulator
             "Set Play mode to use Meta XR Simulator\nSimulates Meta Quest headset and features on desktop";
 #endif
 
-        private const string XRSimDownloadUrl =
-            "https://developer.oculus.com/documentation/unity/unity-xr-simulator/";
+        // ReleaseNotesUrl is the per-OS downloads/package page.
+        private const string XRSimDownloadUrl = XRSimConstants.ReleaseNotesUrl;
 
         internal static readonly ToolDescriptor ToolDescriptor = new()
         {
@@ -124,7 +124,7 @@ namespace Meta.XR.Simulator
                     message: "Newest Meta XR Simulator not installed, consider installing it",
                     fixMessage: "Download Meta XR Simulator",
                     fix: async buildTargetGroup => await Installer.EnsureMetaXRSimulatorInstalled(),
-                    url: "https://developer.oculus.com/documentation/unity/unity-xr-simulator/"
+                    url: XRSimDownloadUrl
                 );
             }
             catch (System.Exception ex)

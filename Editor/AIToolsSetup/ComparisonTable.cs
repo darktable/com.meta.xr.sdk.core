@@ -19,6 +19,7 @@
  */
 
 using Meta.XR.Editor.UserInterface.RLDS;
+using UnityEditor;
 using UnityEngine.UIElements;
 using RLDSStyles = Meta.XR.Editor.UserInterface.RLDS.Styles;
 using Label = UnityEngine.UIElements.Label;
@@ -69,16 +70,21 @@ namespace Meta.XR.Editor
         internal static VisualElement MakeRow(string[] cells, float[] columnWidths, bool isHeader,
             CellStyle[] cellStyles = null)
         {
+            var isProSkin = EditorGUIUtility.isProSkin;
             var row = new VisualElement();
             row.style.flexDirection = FlexDirection.Row;
             row.style.borderBottomWidth = RLDSConstants.BorderWidth.SizeSM;
-            row.style.borderBottomColor = RLDSStyles.Colors.BorderDivider;
+            row.style.borderBottomColor = isProSkin
+                ? RLDSStyles.Colors.BorderDivider
+                : RLDSStyles.Colors.LightBorderDivider;
             row.style.paddingTop = RLDSConstants.Spacing.Size3XS;
             row.style.paddingBottom = RLDSConstants.Spacing.Size3XS;
 
             if (isHeader)
             {
-                row.style.borderBottomColor = RLDSStyles.Colors.IconSecondary;
+                row.style.borderBottomColor = isProSkin
+                    ? RLDSStyles.Colors.IconSecondary
+                    : RLDSStyles.Colors.LightIconSecondary;
                 row.style.borderBottomWidth = RLDSConstants.BorderWidth.SizeMD;
             }
 
@@ -105,16 +111,23 @@ namespace Meta.XR.Editor
 
             if (!isHeader)
             {
+                var isProSkin = EditorGUIUtility.isProSkin;
                 switch (style)
                 {
                     case CellStyle.Positive:
-                        cell.style.color = RLDSStyles.Colors.TextPositive;
+                        cell.style.color = isProSkin
+                            ? RLDSStyles.Colors.TextPositive
+                            : RLDSStyles.Colors.LightTextPositive;
                         break;
                     case CellStyle.Negative:
-                        cell.style.color = RLDSStyles.Colors.TextDisabled;
+                        cell.style.color = isProSkin
+                            ? RLDSStyles.Colors.TextDisabled
+                            : RLDSStyles.Colors.LightTextDisabled;
                         break;
                     case CellStyle.Warning:
-                        cell.style.color = RLDSStyles.Colors.TextWarning;
+                        cell.style.color = isProSkin
+                            ? RLDSStyles.Colors.TextWarning
+                            : RLDSStyles.Colors.LightTextWarning;
                         break;
                 }
             }
@@ -123,4 +136,3 @@ namespace Meta.XR.Editor
         }
     }
 }
-

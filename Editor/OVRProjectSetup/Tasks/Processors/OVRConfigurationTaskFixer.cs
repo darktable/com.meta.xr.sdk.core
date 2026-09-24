@@ -31,11 +31,16 @@ internal class OVRConfigurationTaskFixer : OVRConfigurationTaskProcessor
     public override int AllocatedTimeInMs => 10;
     public override ProcessorType Type => ProcessorType.Fixer;
 
+    // When false, a task hidden from the generic Project Setup Tool is never auto-fixed here; the tool
+    // that owns the group opts in to fix its own tasks.
+    private readonly bool _allowHiddenGroupTasks;
+
     protected override Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>> OpenTasksFilter =>
         (Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>>)(tasksToFilter => tasksToFilter
             .Where(task => (task.FixAction != null || task.AsyncFixAction != null)
                            && !task.IsDone(BuildTargetGroup)
-                           && !task.IsIgnored(BuildTargetGroup))
+                           && !task.IsIgnored(BuildTargetGroup)
+                           && (_allowHiddenGroupTasks || OVRProjectSetup.IsTaskVisibleInProjectSetupTool(task)))
             .ToList());
 
     private const int LoopExitCount = 4;
@@ -52,9 +57,11 @@ internal class OVRConfigurationTaskFixer : OVRConfigurationTaskProcessor
         Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>> filter,
         OVRProjectSetup.LogMessages logMessages,
         bool blocking,
-        Action<OVRConfigurationTaskProcessor> onCompleted)
+        Action<OVRConfigurationTaskProcessor> onCompleted,
+        bool allowHiddenGroupTasks = false)
         : base(registry, buildTargetGroup, filter, logMessages, blocking, onCompleted)
     {
+        _allowHiddenGroupTasks = allowHiddenGroupTasks;
     }
 
     protected override void ProcessTask(OVRConfigurationTask task)

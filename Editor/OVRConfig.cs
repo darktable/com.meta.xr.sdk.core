@@ -115,7 +115,7 @@ public class OVRConfig : ScriptableObject
             if (throwError)
             {
                 EditorUtility.DisplayDialog("Android SDK not Found",
-                    "Android SDK not found. Please ensure that the path is set correctly in (Edit -> Preferences -> External Tools) or that the Untiy Android module is installed correctly.",
+                    "Android SDK not found. Please ensure that the path is set correctly in (Edit -> Preferences -> External Tools) or that the Unity Android module is installed correctly.",
                     "Ok");
             }
 
@@ -169,7 +169,7 @@ public class OVRConfig : ScriptableObject
             if (throwError)
             {
                 EditorUtility.DisplayDialog("Gradle not Found",
-                    "Gradle not found. Please ensure that the path is set correctly in (Edit -> Preferences -> External Tools) or that the Untiy Android module is installed correctly.",
+                    "Gradle not found. Please ensure that the path is set correctly in (Edit -> Preferences -> External Tools) or that the Unity Android module is installed correctly.",
                     "Ok");
             }
 
@@ -228,7 +228,7 @@ public class OVRConfig : ScriptableObject
             if (throwError)
             {
                 EditorUtility.DisplayDialog("JDK not Found",
-                    "JDK not found. Please ensure that the path is set correctly in (Edit -> Preferences -> External Tools) or that the Untiy Android module is installed correctly.",
+                    "JDK not found. Please ensure that the path is set correctly in (Edit -> Preferences -> External Tools) or that the Unity Android module is installed correctly.",
                     "Ok");
             }
 

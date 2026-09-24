@@ -66,6 +66,7 @@ using Meta.XR.AI.AgentBridge;
 
 namespace Meta.XR.RuntimeOptimizer.Editor
 {
+#if UNITY_EDITOR_WIN
     /// <summary>
     /// Registers Runtime Optimizer as a first-class tool in the Meta XR Tools dropdown.
     /// </summary>
@@ -138,6 +139,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         private static (bool, string) ComputeEnablement() =>
             IsRuntimeOptimizerEnabled() ? (true, string.Empty) : (false, "Enable in project settings");
     }
+#endif
 
     /// <summary>Provides an editor window for profiling and optimizing Quest application runtime performance.</summary>
     [InitializeOnLoadAttribute]
@@ -231,7 +233,10 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         // New fields for enhanced capture monitoring (T240137389 + T240137791)
         // Used for Bottleneck, What If, and Quick Perf captures
         private DateTime captureStartTime = default(DateTime);
-        private int maxCaptureTimeoutSeconds = 60; // Maximum capture duration (dynamically adjusted for What If)
+        /// <summary>Capture budget outside of What If, which raises it for the length of its countdown.</summary>
+        private const int kDefaultCaptureTimeoutSeconds = 60;
+
+        private int maxCaptureTimeoutSeconds = kDefaultCaptureTimeoutSeconds; // dynamically adjusted for What If
         private bool isActivelyCapturing = false;
 
         private bool isUpdatingScriptDefines = false;
@@ -262,12 +267,37 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         private readonly ConcurrentQueue<(int payloadType, string message)> pendingPayloads =
             new ConcurrentQueue<(int payloadType, string message)>();
 
+        // Freeze-frame screenshots complete on CaptureTool's capture thread. Same reason as
+        // above: EditorApplication.delayCall cannot be subscribed to off the main thread, so
+        // the completion is queued here and drained in Update().
+        private readonly ConcurrentQueue<string> pendingStagingScreenshots =
+            new ConcurrentQueue<string>();
+
         // App launch debouncing
 
         // App launch debouncing (T230481516 - prevent multiple launches from rapid button clicks)
         private DateTime lastLaunchTime = DateTime.MinValue;
         private const float kLaunchCooldownSeconds = 3.0f;
         private bool isLaunchInProgress = false;
+
+        // Connection state as of this frame's Layout pass. See DrawAppLaunchField: the pass has to
+        // agree with Repaint on how many buttons exist, and the live state can change between them.
+        private AppConnectionState latchedAppConnectionState = AppConnectionState.NotRunning;
+
+        /// <summary>gpuprofserver's pid when the running app connected, or empty if unknown.</summary>
+        /// <remarks>
+        /// The app initialising GPU profiling can make the service restart. Detailed profiling is
+        /// injected into a process at Vulkan init and never afterwards, so an app that outlives the
+        /// instance it started under is un-instrumented for good: Bottleneck Analysis reports
+        /// 0.00ms and every What If fails with "StartGpuProfiling failed to start". Only a relaunch
+        /// recovers it. Comparing against this is how that is noticed at all -- the device still
+        /// reports detailed profiling as enabled, so `ovrgpuprofiler -i` and
+        /// `getprop debug.egl.profiler` both look healthy.
+        /// </remarks>
+        private string gpuServicePidAtConnect = "";
+
+        /// <summary>Latched so the restart is reported once per launch, not every Update tick.</summary>
+        private bool reportedGpuServiceRestart = false;
 
         private string currentSessionID = "";
         private string metaCoreSDKVersion = "Unknown";
@@ -312,7 +342,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         private const string RenderUnityPercentageKey = "ROUsePercentage";
         private const string EnableDebugLogToConsole = "EnableRODebugLogToConsole";
         private const string ExtraAssetInfo = "RODisplayExtraInfo";
-        private OVRNetwork.OVRNetworkTcpClient client = new OVRNetwork.OVRNetworkTcpClient();
+        private RO.OVRNetwork.OVRNetworkTcpClient client = new RO.OVRNetwork.OVRNetworkTcpClient();
         private int remoteListeningPort = 12345;
         private int headsetOSVersion = 0;
 
@@ -396,11 +426,28 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         }
 #endif
 
+        private const string AdbUnavailableMessage =
+            "Runtime Optimizer could not find ADB, so it cannot reach the headset. " +
+            "Check that the Android Build Support module is installed (Unity Hub > Installs > Add modules) " +
+            "and that the Android SDK path is set correctly in Preferences > External Tools, " +
+            "then reopen this window.";
+
+        // Latches once in OnEnable so the failure is reported a single time, instead of every
+        // Update() tick driving a fresh round of ADB calls that cannot succeed.
+        private bool adbUnavailable;
+
         void OnEnable()
         {
 
             // Toggle the enableLog variable
             RO.Util.logToConsole = EditorPrefs.GetBool(EnableDebugLogToConsole, false);
+
+            adbUnavailable = !CaptureTool.IsAdbAvailable();
+            if (adbUnavailable)
+            {
+                UnityEngine.Debug.LogError("[RuntimeOptimizer] " + AdbUnavailableMessage);
+                return;
+            }
 
             // Load PC Testing mode from EditorPrefs
             pcTestingMode = EditorPrefs.GetBool("PCTestingMode", false);
@@ -473,6 +520,11 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
         void OnDisable()
         {
+            if (adbUnavailable)
+            {
+                return;
+            }
+
             client.Disconnect();
             CaptureTool.ReleasePort(remoteListeningPort);
             runtimeServicePID = -1;
@@ -600,12 +652,54 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
         void Update()
         {
+            if (adbUnavailable)
+            {
+                return;
+            }
+
             // Drain network payloads queued from the TCP background thread.
             // This runs unconditionally so scan results are processed even when the
             // editor is out of focus (EditorApplication.delayCall stalls in that case).
             while (pendingPayloads.TryDequeue(out var payload))
             {
                 ProcessPayload(payload.payloadType, payload.message);
+            }
+
+            while (pendingStagingScreenshots.TryDequeue(out var screenshotName))
+            {
+                // A corrupt or partially flushed PNG must not throw out of Update(): the
+                // state below would never be reset, so the freeze would stay stuck and the
+                // throw would repeat every editor tick -- the symptom this queue removes.
+                try
+                {
+                    LoadStagingScreenshot(screenshotName);
+                }
+                catch (System.Exception ex)
+                {
+                    RO.Util.DebugLog($"Failed to load staging screenshot {screenshotName}: {ex}");
+                }
+
+                isActivelyCapturing = false;
+                captureStartTime = default(DateTime);
+
+                lock (freezeFrameLock)
+                {
+                    freezeFrameScreenshotComplete = true;
+                }
+                RO.Util.DebugLog($"Screenshot capture completed for frozen frame: {screenshotName}");
+
+                CheckFreezeFrameCompletion();
+
+                needRepait = true;
+            }
+
+            // A capture in flight shows a card with a throbber, and the editor does not repaint
+            // while idle. Without this the card is not drawn until some unrelated event forces a
+            // redraw, measured at 5.5s after the click -- long after the button reads
+            // "Processing..." -- and the throbber then sits on a single frame.
+            if (!string.IsNullOrEmpty(IsCapturingBottlenecks))
+            {
+                Repaint();
             }
 
             if (isUpdatingScriptDefines)
@@ -749,32 +843,63 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                     }
                 }
 
-                if (IsDeviceAsleep())
+                // Skipped while the capture thread is running adb commands. OVRADBTool keeps its
+                // stdout and stderr StringBuilders in instance fields that every RunCommand
+                // reassigns and then nulls, so two threads sharing one tool read each other's
+                // output. This poll is the only adb call left unguarded during a capture, and the
+                // capture thread's GetDevices() is what it corrupts: that call then parses an empty
+                // buffer, clears the device list, and the very next Update cancels the capture as a
+                // headset_disconnection while the headset is plainly still attached.
+                // Noticed here rather than waited for in LaunchApp: the restart lands at no fixed
+                // delay -- measured from about 5s after the app starts to beyond 9s after the
+                // connect -- so any bounded wait either misses it or freezes the editor guessing.
+                // Update already polls on this cadence and costs nothing extra.
+                if (!CaptureTool.IsCaptureThreadRunning()
+                    && !reportedGpuServiceRestart
+                    && playerConnected
+                    && !string.IsNullOrEmpty(gpuServicePidAtConnect))
                 {
-                    if (runtimeServicePID != -1 && !sleepNotificationShown)
+                    string gpuServicePidNow = CaptureTool.GpuServicePid();
+                    if (!string.IsNullOrEmpty(gpuServicePidNow) && gpuServicePidNow != gpuServicePidAtConnect)
                     {
-                        RO.Util.DebugLog("Device is asleep, resetting connection state");
-                        EditorUtility.DisplayDialog(
-                            "Device Disconnected",
-                            "The device appears to be asleep and has been disconnected.",
-                            "OK"
-                        );
-                        runtimeServicePID = -1;
-                        sleepNotificationShown = true;
-                        needRepait = true;
-                        // Cancel any active capture operation when device sleeps (T241267036)
-                        // Check all capture states, not just isActivelyCapturing, to prevent
-                        // getting stuck in "Processing..." when power button is pressed mid-capture
-                        if (isActivelyCapturing || IsCapturingBottlenecks != "" || isCapturingWhatIf || freezeFrameInProgress || capturingForStaging)
-                        {
-                            CancelCurrentCapture("Device entered sleep mode during capture. Please wake the device and try again.", "device_sleep");
-                        }
+                        reportedGpuServiceRestart = true;
+                        RO.Util.DebugLogWarning(
+                            "The GPU profiling service restarted (" + gpuServicePidAtConnect + " -> " +
+                            gpuServicePidNow + ") after this app started, so the app is no longer " +
+                            "instrumented: Bottleneck Analysis will report 0.00ms GPU and What If " +
+                            "will return no rows. Press Launch to relaunch under the new service.");
                     }
                 }
-                else
+
+                if (!CaptureTool.IsCaptureThreadRunning())
                 {
-                    // Device is awake - reset the notification flag so it can be shown again on next sleep
-                    sleepNotificationShown = false;
+                    if (IsDeviceAsleep())
+                    {
+                        if (runtimeServicePID != -1 && !sleepNotificationShown)
+                        {
+                            RO.Util.DebugLog("Device is asleep, resetting connection state");
+                            EditorUtility.DisplayDialog(
+                                "Device Disconnected",
+                                "The device appears to be asleep and has been disconnected.",
+                                "OK"
+                            );
+                            runtimeServicePID = -1;
+                            sleepNotificationShown = true;
+                            needRepait = true;
+                            // Cancel any active capture operation when device sleeps (T241267036)
+                            // Check all capture states, not just isActivelyCapturing, to prevent
+                            // getting stuck in "Processing..." when power button is pressed mid-capture
+                            if (isActivelyCapturing || IsCapturingBottlenecks != "" || isCapturingWhatIf || freezeFrameInProgress || capturingForStaging)
+                            {
+                                CancelCurrentCapture("Device entered sleep mode during capture. Please wake the device and try again.", "device_sleep");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Device is awake - reset the notification flag so it can be shown again on next sleep
+                        sleepNotificationShown = false;
+                    }
                 }
 
                 lastTimeAdbValidate = now;
@@ -871,7 +996,9 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         }
 
         /// <summary>Opens the Quest Runtime Optimizer editor window from the Meta menu.</summary>
-        [MenuItem("Meta/Tools/Runtime optimizer", false, 1)]
+#if UNITY_EDITOR_WIN
+        [MenuItem("Window/Meta/Tools/Runtime optimizer", false, 2301)]
+#endif
         public static void ShowWindow()
         {
             ShowWindow("Menu Item");
@@ -1032,7 +1159,6 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
             int connectionDeviceCount = CaptureTool.ConnectedDeviceCount();
             AppConnectionState currentConnectionState = GetAppConnectionState();
-            RO.Util.DebugLog($"DrawConnectionSetting: DeviceCount={connectionDeviceCount}, IsCapturing={IsCapturingBottlenecks}, playerConnected={playerConnected}, runtimeServicePID={runtimeServicePID}, lastKnownPID={CaptureTool.lastKnownPID}, AppConnectionState={currentConnectionState}");
 
             // FIXED LOGIC: Handle PC Testing Mode separately from device mode
             if (pcTestingMode)
@@ -1432,7 +1558,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         }
 
 
-        private void CancelCurrentCapture(string errorMessage, string failureReason = "device_disconnection", bool showDialog = true)
+        private void CancelCurrentCapture(string errorMessage, string failureReason = "device_disconnection")
         {
             bool wasCapturing = isActivelyCapturing || IsCapturingBottlenecks != "" || isCapturingWhatIf || capturingForStaging;
             // Reset capture state for both Bottleneck Analysis and What If Analysis
@@ -1506,10 +1632,43 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 RO.Util.DebugLog($"Capture failed due to {failureReason} but device may still be connected - keeping UI enabled for retry");
             }
 
-            // Show error dialog to user (optional)
-            if (showDialog)
+            // Report the failure to the console rather than through a modal.
+            //
+            // EditorUtility.DisplayDialog parks Unity's main thread until someone clicks OK. A
+            // capture most often fails because the app died under the Adreno GPU profiler layer,
+            // which is exactly when nobody is watching the editor -- it then looks wedged, and
+            // every later connection attempt fails behind the dialog until it is dismissed. The
+            // failing capture's card is removed either way, which is the signal the user needs,
+            // so this only has to stay diagnosable.
+            // The app's TCP client drops as soon as its process goes away, so this separates
+            // "the app crashed" from "the capture went wrong" without an adb round trip.
+            // Polling adb here would race the capture thread: RunCommand reassigns adbTool's
+            // shared output builders on every call.
+            //
+            // Only a timeout leaves the cause open. Sleep, disconnection and a user-requested
+            // relaunch all drop the client too, and on those the reason already names the cause --
+            // saying the app stopped running would be describing a deliberate act as a crash.
+            bool causeUnexplained = failureReason == "capture_timeout";
+            bool appWentAway = causeUnexplained &&
+                (client == null ||
+                 client.connectionState != RO.OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected);
+
+            string reported = appWentAway
+                ? "the app stopped running during the capture. " + errorMessage
+                : errorMessage;
+
+            // A relaunch is the user pressing Launch, which cancels whatever was in flight by
+            // design. Reporting that as an error puts a red entry in the console for an action
+            // they just took, and it is the single noisiest line in a normal session. Every other
+            // reason here is a genuine failure and stays an error.
+            string capturedMessage = "Capture failed [" + failureReason + "]: " + reported;
+            if (failureReason == "app_relaunch")
             {
-                EditorUtility.DisplayDialog("Capture Failed", errorMessage, "OK");
+                RO.Util.DebugLogWarning(capturedMessage);
+            }
+            else
+            {
+                RO.Util.DebugLogError(capturedMessage);
             }
 
             // Enhanced event logging with specific failure reasons
@@ -1529,7 +1688,6 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
                 string eventJson = InsightEventDataStr.ToJsonStr(JsonUtility.ToJson(failureEventData));
                 RuntimeOptimizerPlugin.SendEvent($"capture_failed_{failureReason}", eventJson);
-                RO.Util.DebugLogError($"Capture failed - Reason: {failureReason}, Message: {errorMessage}");
             }
         }
 
@@ -2262,7 +2420,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                     {
                         // Stop the timer when we reach zero
                         // NOTE: Don't unfreeze automatically - let user control when to unfreeze
-                        StopCountdownTimer();
+                        StopCountdownTimer(restoreTimeout: false);
                         // StopHeadlock(); // Removed automatic unfreeze
                     }
                 },
@@ -2271,13 +2429,31 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 1000); // 1000ms = 1 second
         }
 
-        private void StopCountdownTimer()
+        /// <param name="restoreTimeout">
+        /// False when the countdown merely reached zero. The capture can still be in flight there,
+        /// and its elapsed time already exceeds the default budget, so restoring would hand the
+        /// next CheckCaptureTimeout a run to cancel and consume the buffer the raise added.
+        /// </param>
+        private void StopCountdownTimer(bool restoreTimeout = true)
         {
             if (countdownTimer != null)
             {
                 countdownTimer.Dispose();
                 countdownTimer = null;
             }
+
+            if (!restoreTimeout)
+            {
+                return;
+            }
+
+            // A What If run with many GameObjects raises maxCaptureTimeoutSeconds to cover its
+            // own countdown. Without putting it back, that inflated budget applies to every
+            // later capture in the session, so a genuinely stuck one is waited on for minutes
+            // instead of the intended minute. This runs on the completion, cancellation and
+            // teardown paths alike, which is why the restore lives here rather than next to
+            // the code that raises it.
+            maxCaptureTimeoutSeconds = kDefaultCaptureTimeoutSeconds;
         }
 
 
@@ -2358,25 +2534,8 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                     },
                     () =>
                     {
-                        // After screenshot capture completes - load image directly
-                        EditorApplication.delayCall += () =>
-                        {
-                            LoadStagingScreenshot(stagingFrameName);
-                            isActivelyCapturing = false;
-                            captureStartTime = default(DateTime);
-
-                            // Mark screenshot as complete
-                            lock (freezeFrameLock)
-                            {
-                                freezeFrameScreenshotComplete = true;
-                            }
-                            RO.Util.DebugLog($"Screenshot capture completed for frozen frame: {stagingFrameName}");
-
-                            // Check if freeze frame is fully complete
-                            CheckFreezeFrameCompletion();
-
-                            needRepait = true;
-                        };
+                        // Runs on CaptureTool's capture thread; hand off to Update().
+                        pendingStagingScreenshots.Enqueue(stagingFrameName);
                     });
 
                 RO.Util.DebugLog($"Freeze frame screenshot capture initiated: {stagingFrameName}");
@@ -2842,6 +3001,20 @@ namespace Meta.XR.RuntimeOptimizer.Editor
             return new GUIContent(result, imageToUse);
         }
 
+        /// <summary>Current frame of Unity's built-in throbber, or null if unavailable.</summary>
+        /// <remarks>
+        /// Driven off timeSinceStartup rather than a counter so it animates at a steady rate
+        /// regardless of how often the window repaints. Callers must keep requesting repaints
+        /// while a spinner is on screen or it sits on one frame.
+        /// </remarks>
+        private static Texture2D? GetSpinnerFrame()
+        {
+            const int kSpinnerFrames = 12;
+            int frame = (int)(EditorApplication.timeSinceStartup * kSpinnerFrames) % kSpinnerFrames;
+            GUIContent content = EditorGUIUtility.IconContent("WaitSpin" + frame.ToString("00"));
+            return content != null ? content.image as Texture2D : null;
+        }
+
         static string GetStringAfterLastSlash(string originalString)
         {
             if (string.IsNullOrEmpty(originalString))
@@ -3108,7 +3281,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
             EditorGUILayout.Space(20);
 
-            if (hasAOCInstalled)
+            if (EditorPrefs.GetBool(EnableAOCKey, false) && hasAOCInstalled)
             {
                 if (DrawMaterialSection(displayExtraInfo))
                 {
@@ -3282,9 +3455,19 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 executablePath = newExecutablePath;
             }
 
-            AppConnectionState currentState = GetAppConnectionState();
+            // IMGUI matches controls between the Layout and Repaint passes by position, so both
+            // passes have to emit the same number of them. RunningDisconnected draws a second
+            // button that the other two states do not, and the state behind it moves outside
+            // OnGUI: Update() clears playerConnected, and the network thread changes the client's
+            // connection state. Reading it live lets it flip mid-frame, and the extra Button then
+            // throws "Getting control N's position in a group with only N controls", which aborts
+            // the whole window's repaint. Latch it on Layout and reuse that for the frame.
+            if (Event.current.type == EventType.Layout)
+            {
+                latchedAppConnectionState = GetAppConnectionState();
+            }
 
-            switch (currentState)
+            switch (latchedAppConnectionState)
             {
                 case AppConnectionState.NotRunning:
                     DrawLaunchButton();
@@ -3366,7 +3549,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                     client.Disconnect();
                 }
 
-                client = new OVRNetwork.OVRNetworkTcpClient();
+                client = new RO.OVRNetwork.OVRNetworkTcpClient();
                 client.payloadReceivedCallback += OnPayloadReceived;
                 client.connectionStateChangedCallback += OnConnectionStateChanged;
                 client.NetworkErrorOccurred += OnNetworkError;
@@ -3382,7 +3565,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 {
                     Thread.Sleep(100);
 
-                    if (client.connectionState == OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected)
+                    if (client.connectionState == RO.OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected)
                     {
                         playerConnected = true;
                         runtimeServicePID = 1; // Set to non-negative value for PC mode
@@ -3393,7 +3576,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                         RO.Util.DebugLog("Successfully connected to PC RuntimeOptimizerService");
                         break;
                     }
-                    else if (client.connectionState == OVRNetwork.OVRNetworkTcpClient.ConnectionState.Disconnected)
+                    else if (client.connectionState == RO.OVRNetwork.OVRNetworkTcpClient.ConnectionState.Disconnected)
                     {
                         // Connection failed, break out early
                         RO.Util.DebugLog("Connection state is Disconnected, connection failed");
@@ -3449,7 +3632,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
             };
             string connectAttemptJson = InsightEventDataStr.ToJsonStr(JsonUtility.ToJson(connectAttemptData));
             RuntimeOptimizerPlugin.SendEvent("connect_to_server_start", connectAttemptJson);
-            client = new OVRNetwork.OVRNetworkTcpClient();
+            client = new RO.OVRNetwork.OVRNetworkTcpClient();
             client.payloadReceivedCallback += OnPayloadReceived;
             client.connectionStateChangedCallback += OnConnectionStateChanged;
             client.NetworkErrorOccurred += OnNetworkError;
@@ -3464,7 +3647,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                     if (processID != -1)
                     {
                         client.Connect(12345);
-                        if (client.connectionState == OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected)
+                        if (client.connectionState == RO.OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected)
                         {
                             connectedCount++;
                             if (connectedCount > 1)
@@ -3549,7 +3732,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
             needRepait = true;
 
             // Check if we're currently capturing and cancel it first
-            CancelCurrentCapture("App launch requested. Canceling current capture.", "app_relaunch", showDialog: false);
+            CancelCurrentCapture("App launch requested. Canceling current capture.", "app_relaunch");
 
             // IMPORTANT: Set playerConnected to false BEFORE launching
             // This greys out all capture options during relaunch
@@ -3565,12 +3748,37 @@ namespace Meta.XR.RuntimeOptimizer.Editor
             CaptureTool.ReleasePort(remoteListeningPort);
             CaptureTool.ForwardPort(remoteListeningPort);
             CaptureTool.KillApp(bundleName);
-            CaptureTool.Init(bundleName);
+            // waitForGpuService: the GPU driver injects detailed profiling into a process at
+            // Vulkan/GL init, so the profiling service has to be up before the launch below and not
+            // merely requested. On the first launch of a session the service is cold and the app
+            // wins that race, which is what leaves the first Bottleneck Analysis at GPU: 0.00ms.
+            CaptureTool.Init(bundleName, false, waitForGpuService: true);
             Thread.Sleep(1000);
             CaptureTool.LaunchApp(executablePath);
 
             // ConnectToServer will set playerConnected to true on successful connection
             ConnectToServer(35, "launch");
+
+            // Remember which gpuprofserver instance this app started under. The app initialising
+            // GPU profiling can make the service restart, and a process whose Vulkan init happened
+            // under the previous instance is un-instrumented for the rest of its life. The restart
+            // arrives at no fixed delay -- measured anywhere from ~5s after the app starts to past
+            // 9s after the connect -- so it is watched for in Update rather than waited on here,
+            // which would block the editor for an interval that is guesswork anyway.
+            gpuServicePidAtConnect = CaptureTool.GpuServicePid();
+            reportedGpuServiceRestart = false;
+
+            // Arming leaves the driver in detailed mode, but the app's own
+            // RuntimeOptimizerService.StartGpuProfiling() stays broken until a render stage
+            // trace has actually run, and it is What If that depends on it. Without this,
+            // Launch -> Freeze -> What If returns no rows and the device logs "StartGpuProfiling
+            // failed to start. Make sure you run adb shell ovrgpuprofiler -e" -- misleading,
+            // because -e had already run and -t had not. Bottleneck Analysis happened to hide
+            // this by priming on its own capture path, so What If only worked after a capture.
+            //
+            // It has to be here rather than in Init: the trace needs a live app that is
+            // already rendering, and Init runs before the launch.
+            CaptureTool.PrimeRenderStageStream();
 
             // Reset launch in progress flag and record completion time for cooldown.
             // lastLaunchTime is set HERE (after ConnectToServer returns) so the 3-second
@@ -3595,7 +3803,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
             bool isConnected = playerConnected &&
                               (client != null) &&
-                              (client.connectionState == OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected);
+                              (client.connectionState == RO.OVRNetwork.OVRNetworkTcpClient.ConnectionState.Connected);
 
             return isConnected ? AppConnectionState.RunningConnected : AppConnectionState.RunningDisconnected;
         }
@@ -3603,6 +3811,21 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         private void AttemptReconnection()
         {
             RO.Util.DebugLog("Attempting to reconnect to running app...");
+
+            // Reconnecting restores the TCP link and nothing else. Detailed profiling is injected
+            // into a process at Vulkan init, so once the service has restarted under a running app
+            // that app stays un-instrumented however many times the editor reconnects to it: the
+            // connection comes back, the UI looks healthy, and every capture still reports 0.00ms
+            // GPU with What If returning no rows. Only relaunching starts a process under the
+            // current service. Say so here, because Connect sitting next to Relaunch reads as the
+            // lighter-weight fix for the same problem, and it is not a fix at all.
+            if (reportedGpuServiceRestart)
+            {
+                RO.Util.DebugLogWarning(
+                    "Reconnecting will restore the connection but not GPU profiling: this app " +
+                    "started under a GPU profiling service that has since restarted. Press Launch " +
+                    "instead, or Bottleneck Analysis and What If will keep returning no GPU data.");
+            }
 
             // Reset GPU profiling dialog flag before attempting reconnection
             gpuProfilingDialogShown = false;
@@ -3663,6 +3886,19 @@ namespace Meta.XR.RuntimeOptimizer.Editor
             EditorGUILayout.LabelField("Player Connection:", EditorStyles.boldLabel, GUILayout.Width(120));
             EditorGUILayout.BeginVertical(GUILayout.ExpandWidth(true), GUILayout.Width(80));
             EditorGUILayout.EndVertical();
+        }
+
+        // A capture is listed as soon as ProcessCaptureCaches stops re-queueing work, which can
+        // happen while the screenshot and the metric JSON are still being produced.
+        internal static bool IsCaptureReadyToOpen(
+            string fileName,
+            IReadOnlyDictionary<string, Texture2D> captureImages,
+            IReadOnlyDictionary<string, JSONObject> metricJson,
+            IReadOnlyDictionary<string, JSONObject> snapshotJson)
+        {
+            return captureImages.ContainsKey(fileName)
+                && metricJson.ContainsKey(fileName)
+                && snapshotJson.ContainsKey(fileName);
         }
 
         private bool ProcessCaptureCaches(string fileName, string item)
@@ -3887,6 +4123,12 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
         void OnGUI()
         {
+            if (adbUnavailable)
+            {
+                EditorGUILayout.HelpBox(AdbUnavailableMessage, MessageType.Error);
+                return;
+            }
+
             // Extract package name from executable path if it has been set
             if (!string.IsNullOrEmpty(executablePath) && executablePath.Contains("/"))
             {
@@ -3916,6 +4158,10 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                     EditorGUILayout.HelpBox("AOC is necessary to estimate material rendering cost, please consider downloading & installing the package", MessageType.Warning);
                 }
             }
+            else
+            {
+                hasAOCInstalled = false;
+            }
 
             DrawSeperator();
 
@@ -3939,6 +4185,32 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 EditorGUILayout.Space(10);
 
                 string[] captures = CaptureTool.GetCapturedList();
+
+                // A capture in flight has no file on disk yet. Adding it to the same list the
+                // cards are drawn from means one card transitions from capturing to populated,
+                // instead of a placeholder being swapped for a different card. Networking sets
+                // IsCapturingBottlenecks to the capture name and clears it once that capture has
+                // been processed, which is also when the real file appears here. Only a bottleneck
+                // capture sets it; isActivelyCapturing is shared with freeze frame and What If.
+                string? pendingCaptureItem = null;
+                if (!string.IsNullOrEmpty(IsCapturingBottlenecks))
+                {
+                    pendingCaptureItem = Path.Combine(
+                        CaptureTool.GetOutputDirectory(), IsCapturingBottlenecks + ".ptrace");
+                    if (Array.IndexOf(captures, pendingCaptureItem) >= 0)
+                    {
+                        pendingCaptureItem = null;
+                    }
+                }
+
+                List<string> captureItems = new List<string>(captures);
+                if (pendingCaptureItem != null)
+                {
+                    // CompareStringsAsHex returns l2 - l1, so GetCapturedList is newest first. The
+                    // in-flight capture is the newest of all and belongs at the top: appending it
+                    // buries it under every past capture, off the bottom of the scroll view.
+                    captureItems.Insert(0, pendingCaptureItem);
+                }
 
                 // Runtime Optimizer Results UI
                 GUILayout.Space(10);
@@ -3980,21 +4252,25 @@ namespace Meta.XR.RuntimeOptimizer.Editor
 
                     insightCapturePosition = EditorGUILayout.BeginScrollView(insightCapturePosition, Styles.ToolBox, GUILayout.ExpandWidth(true));
 
-                    if (captures.Length > 0)
+                    if (captureItems.Count > 0)
                     {
                         if (lastSelectedInsight == InsightType.EMPTY_NO_CAPTURES)
                         {
                             lastSelectedInsight = InsightType.EMPTY_WITH_CAPTURES;
                         }
 
-                        foreach (var item in captures)
+                        foreach (var item in captureItems)
                         {
                             string fileName = Path.GetFileNameWithoutExtension(item);
 
                             // start layout
-                            if (captureItemProcessed.ContainsKey(item))
+                            bool isPendingCapture = item == pendingCaptureItem;
+                            if (captureItemProcessed.ContainsKey(item) || isPendingCapture)
                             {
-                                Texture2D imageToUse = captureImageCache.ContainsKey(fileName) ? captureImageCache[fileName] : Texture2D.whiteTexture;
+                                bool thumbnailReady = captureImageCache.ContainsKey(fileName);
+                                Texture2D imageToUse = thumbnailReady
+                                    ? captureImageCache[fileName]
+                                    : (GetSpinnerFrame() ?? Texture2D.whiteTexture);
                                 JSONObject? metricJsonToUse = metricJsonCache.ContainsKey(fileName) ? metricJsonCache[fileName] : null;
 
                                 bool isSelectedCapture = lastSelectedInsight == InsightType.ACTIONABLE_INSIGHT && lastSelectedInsightName == fileName;
@@ -4006,8 +4282,17 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                                     EditorGUILayout.BeginVertical(GUILayout.ExpandWidth(true), GUILayout.Width(kSnapshotWidth));
 
                                     GUILayout.BeginHorizontal();
-                                    DateTime captureDate = new DateTime(1970, 1, 1, 0, 0, 0).AddSeconds(Convert.ToInt64(fileName, 16));
-                                    string captureDateStr = captureDate.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                                    // Capture names are hex epoch seconds. Parsed defensively so a
+                                    // name not in that form cannot throw out of OnGUI.
+                                    long captureEpochSeconds;
+                                    string captureDateStr = long.TryParse(
+                                        fileName,
+                                        System.Globalization.NumberStyles.HexNumber,
+                                        System.Globalization.CultureInfo.InvariantCulture,
+                                        out captureEpochSeconds)
+                                        ? new DateTime(1970, 1, 1, 0, 0, 0).AddSeconds(captureEpochSeconds)
+                                            .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                                        : fileName;
                                     EditorGUILayout.LabelField(captureDateStr, EditorStyles.boldLabel);
 
                                     GUILayout.FlexibleSpace();
@@ -4112,6 +4397,18 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                                     GUILayout.EndHorizontal();
 
                                     GUIContent buttonContent = GetGUPContentForAnalysButton(item, fileName, imageToUse, metricJsonToUse, snapshotJsonToUse);
+                                    if (!thumbnailReady && isPendingCapture)
+                                    {
+                                        // Same card, capturing state. The label is set here rather
+                                        // than baked in with a leading newline, so the button style
+                                        // centres throbber and text together instead of pushing the
+                                        // text off the spinner's centre line.
+                                        buttonContent = new GUIContent("Capturing...", imageToUse);
+                                    }
+                                    bool previousGUIEnabledCapture = GUI.enabled;
+                                    bool captureReadyToOpen = IsCaptureReadyToOpen(
+                                        fileName, captureImageCache, metricJsonCache, snapshotJsonCache);
+                                    GUI.enabled = previousGUIEnabledCapture && captureReadyToOpen;
                                     if (GUILayout.Button(buttonContent, GUILayout.Width(kSnapshotWidth), GUILayout.Height(kSnapshotHeight)))
                                     {
                                         if (!(lastSelectedInsight == InsightType.ACTIONABLE_INSIGHT && lastSelectedInsightName == fileName))
@@ -4136,8 +4433,9 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                                             }
                                         }
                                     }
+                                    GUI.enabled = previousGUIEnabledCapture;
 
-                                    EditorGUILayout.LabelField("Bottleneck", Styles.InsightToolNote, GUILayout.Width(80));
+                                    EditorGUILayout.LabelField(captureReadyToOpen ? "Bottleneck" : "Loading…", Styles.InsightToolNote, GUILayout.Width(80));
                                     EditorGUILayout.EndVertical();
                                 }
 

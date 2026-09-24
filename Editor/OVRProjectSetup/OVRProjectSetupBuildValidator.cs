@@ -44,9 +44,14 @@ internal class OVRProjectSetupBuildValidator : IPreprocessBuildWithReport
 
         OVRProjectSetup.UpdateTasks(buildTargetGroup, onCompleted: OnUpdated(reportOutputPath));
 
-        // Log telemetry for ALL rules (including conditionally invalid ones)
+        // Log telemetry for all rules, except tasks hidden from the generic Project Setup Tool.
         foreach (var task in OVRProjectSetup.Registry.GetTasks(buildTargetGroup))
         {
+            if (!OVRProjectSetup.IsTaskVisibleInProjectSetupTool(task))
+            {
+                continue;
+            }
+
             var unifiedEvent = new OVRPlugin.UnifiedEventData(OVRTelemetryConstants.Editor.FalcoEventName.FeaturesInScene)
             {
                 isEssential = OVRPlugin.Bool.False,
@@ -85,6 +90,7 @@ internal class OVRProjectSetupBuildValidator : IPreprocessBuildWithReport
     private static void ValidateTask(OVRConfigurationTask task, BuildTargetGroup buildTargetGroup)
     {
         if (task.IsIgnored(buildTargetGroup)
+            || !OVRProjectSetup.IsTaskVisibleInProjectSetupTool(task)
             || task.Level.GetValue(buildTargetGroup) != OVRProjectSetup.TaskLevel.Required
             || task.IsDone(buildTargetGroup))
         {

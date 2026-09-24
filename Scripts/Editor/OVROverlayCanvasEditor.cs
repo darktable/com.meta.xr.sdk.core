@@ -272,7 +272,11 @@ public class OVROverlayCanvasEditor : Editor
         if (targets.Length == 1)
         {
             var canvas = (OVROverlayCanvas)target;
-            DisplayMessage(canvas.manualRedraw ? DisplayMessageType.Notice : DisplayMessageType.Warning,
+            bool is3DActive = canvas.enable3D && canvas.shape == OVROverlayCanvas.CanvasShape.Flat;
+            DisplayMessage(
+                is3DActive ? DisplayMessageType.Notice :
+                canvas.manualRedraw ? DisplayMessageType.Notice : DisplayMessageType.Warning,
+                is3DActive ? "Stereo 3D rendering is active. This canvas will render every frame, once per eye." :
                     canvas.manualRedraw ? "This canvas will only re-render when triggered." :
                     canvas.renderInterval <= 1 ? "This canvas will render every frame." :
                     $"This canvas will render once every {canvas.renderInterval} frames.",
@@ -500,6 +504,26 @@ public class OVROverlayCanvasEditor : Editor
             }
         }
 
+        EditorGUILayout.PropertyField(
+            serializedObject.FindProperty(nameof(OVROverlayCanvas.enable3D)),
+            new GUIContent("Enable 3D",
+                "Render the canvas stereoscopically from each eye position so 3D children get per-eye parallax. "
+                + "Flat shape only. Forces per-frame rendering and disables Render Interval / Manual Redraw."));
+        serializedObject.ApplyModifiedProperties();
+
+        if (canvases.Any(c => c.enable3D && c.shape == OVROverlayCanvas.CanvasShape.Curved))
+        {
+            DisplayMessage(DisplayMessageType.Warning,
+                "Enable 3D requires a Flat canvas shape. Curved canvases will continue to render mono.");
+        }
+
+        if (canvases.Any(c => c.enable3D && c.shape == OVROverlayCanvas.CanvasShape.Flat
+                && c._mipmapMode != OVROverlayCanvas.MipMapMode.Disabled))
+        {
+            DisplayMessage(DisplayMessageType.Notice,
+                "Enable 3D renders only mip 0 per eye; the Mipmap Mode setting is effectively ignored while 3D is active.");
+        }
+
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Rendering Options", EditorStyles.boldLabel);
 
@@ -548,6 +572,13 @@ public class OVROverlayCanvasEditor : Editor
         EditorGUILayout.PropertyField(
             serializedObject.FindProperty(nameof(OVROverlayCanvas.manualRedraw)),
             new GUIContent("Manual Redraw", "When enabled, the canvas will only automatically render once."));
+
+        if (canvases.Any(c => c.enable3D && c.shape == OVROverlayCanvas.CanvasShape.Flat
+                && (c.manualRedraw || c.renderInterval > 1)))
+        {
+            DisplayMessage(DisplayMessageType.Notice,
+                "Manual Redraw and Render Interval are ignored while Enable 3D is active (head pose changes every frame).");
+        }
 
         using (var disabledScope = new EditorGUI.DisabledGroupScope(!canvases.Any(c => !c.manualRedraw)))
         {

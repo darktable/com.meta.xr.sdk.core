@@ -21,7 +21,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Meta.MCPBridge.Editor;
 using Meta.XR.AI.AgentBridge;
 using Meta.XR.Editor.Id;
 using Meta.XR.Editor.ToolingSupport;
@@ -38,6 +37,7 @@ using ScrollView = UnityEngine.UIElements.ScrollView;
 using AgentBridgeSettings = Meta.XR.AI.AgentBridge.Settings;
 using AgentBridgeUtils = Meta.XR.AI.AgentBridge.Utils;
 using Spinner = Meta.XR.Editor.UserInterface.RLDS.Spinner;
+using RLDSButton = Meta.XR.Editor.UserInterface.RLDS.Button;
 using StepState = Meta.XR.Editor.AIToolsSetupModel.StepState;
 
 namespace Meta.XR.Editor
@@ -53,6 +53,11 @@ namespace Meta.XR.Editor
 
         internal const string SettingsPath = "Preferences/Meta XR/AI Tools";
 
+        // Matches WelcomeWindow.DownloadIcon so the "Download Meta VR CLI" CTA here reads the same
+        // as the Welcome card's "Download" CTA for the same tool.
+        private static readonly TextureContent DownloadIcon =
+            TextureContent.CreateContent("download.png", TextureContent.Categories.Generic, null);
+
         internal static readonly ToolDescriptor ToolDescriptor = new()
         {
             Name = AIToolsSetupStrings.Header.WindowTitle,
@@ -64,6 +69,7 @@ namespace Meta.XR.Editor
             Color = UserInterface.Styles.Colors.AI,
             Icon = TextureContent.CreateContent("feature_ai_agent.png", TextureContent.Categories.Generic),
             Experimental = true,
+            DrawExperimentalInStatusMenu = true,
             AddToStatusMenu = true,
             MenuCategory = MenuCategory.Tools,
             AddToMenu = true,
@@ -86,18 +92,24 @@ namespace Meta.XR.Editor
         {
             if (!AgentBridgeSettings.IsEnabled)
                 return ("Not connected", UserInterface.Styles.Colors.DisabledColor);
-            var status = McpRegistration.GetClaudeCodeStatus(McpBridgeSettings.Port.Value);
-            return status == McpRegistrationStatus.Registered
-                ? ("Connected", UserInterface.Styles.Colors.SuccessColor)
-                : ("Not connected", UserInterface.Styles.Colors.DisabledColor);
+            // The AI Agent Bridge being enabled is the connection signal; the editor-tools MCP is
+            // internal-only and the per-card XR Operator status shows the tool source.
+            return ("Connected", UserInterface.Styles.Colors.SuccessColor);
         }
         private AIToolsSetupModel _model;
         private StyleSheet _styleSheet;
         private float _savedScrollOffset;
 
+        // Scroll-offset restore is deferred a frame (the new ScrollView has no layout yet), so these
+        // guard against a rebuild landing inside that window. See BuildUI.
+        private bool _scrollRestorePending;
+        private int _scrollRestoreGeneration;
+
         // Reset at the start of each BuildUI; NextStepLabel increments it so step numbering
         // stays gap-free when the Windows-only firewall step is skipped on macOS.
         private int _stepCounter;
+        private long _openedAtMs;
+        private Origins _pendingOrigin = Origins.Unknown;
 
         private void OnFirewallStatusChanged()
         {
@@ -109,9 +121,77 @@ namespace Meta.XR.Editor
             BuildUI();
         }
 
+        private void OnProviderStateChanged()
+        {
+            if (_model == null)
+            {
+                return;
+            }
+            _model.RefreshStepStates();
+            BuildUI();
+        }
+
+        private void OnAgentBridgeEnabledChanged()
+        {
+            if (_model == null)
+            {
+                return;
+            }
+            _model.RefreshStepStates();
+            BuildUI();
+        }
+
+        private void OnSelectedServiceChangedExternally(string serviceId)
+        {
+            EditorApplication.delayCall += () =>
+            {
+                if (_model == null)
+                {
+                    return;
+                }
+
+                if (_model.SelectedServiceId != serviceId)
+                {
+                    _model.SyncSelectedServiceFromSettings();
+                    BuildUI();
+                }
+
+                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+            };
+        }
+
+        private void OnFocus()
+        {
+            // Some state can change outside this window without raising an event we subscribe to —
+            // e.g. the Project Setup Tool's "Apply All" activates Meta XR Operator. Re-derive state
+            // and rebuild on focus so the window reflects those external changes.
+            if (_model == null)
+            {
+                return;
+            }
+            _model.RefreshStepStates();
+            BuildUI();
+        }
+
         private void OnDisable()
         {
             WindowsFirewallUtility.StatusChanged -= OnFirewallStatusChanged;
+            AIToolsSetupModel.ProviderStateChanged -= OnProviderStateChanged;
+            AgentBridgeSettings.Activated -= OnAgentBridgeEnabledChanged;
+            AgentBridgeSettings.Deactivated -= OnAgentBridgeEnabledChanged;
+            AgentBridgeSettings.SelectedServiceChanged -= OnSelectedServiceChangedExternally;
+            var elapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - _openedAtMs)
+                * 1000 / System.Diagnostics.Stopwatch.Frequency;
+            var completedAll = _model != null && _model.IsFullSetupComplete;
+            AIToolsSetupTelemetry.SendEvent(
+                AIToolsSetupTelemetryConstants.FalcoEventName.Closed,
+                evt =>
+                {
+                    evt.SetMetadata(AIToolsSetupTelemetryConstants.AnnotationType.DurationMs, elapsed);
+                    evt.SetMetadata(AIToolsSetupTelemetryConstants.AnnotationType.CompletedFullSetup, completedAll);
+                });
+            AIToolsSetupTelemetry.ResetSession();
+            AIToolsSetupTelemetry.ActiveModel = null;
         }
 
         private static void OnToolClicked(Origins origin)
@@ -119,8 +199,28 @@ namespace Meta.XR.Editor
             var window = GetWindow<AIToolsSetupWindow>();
             window.titleContent = new GUIContent(AIToolsSetupStrings.Header.DisplayTitle);
             window.minSize = new Vector2(WindowWidth, WindowHeight);
+            window._pendingOrigin = origin;
             window.Show();
             window.Focus();
+        }
+
+        private static string EntryPointFor(Origins origin)
+        {
+            switch (origin)
+            {
+                case Origins.UserSettings:
+                case Origins.ProjectSettings:
+                    return AIToolsSetupTelemetryConstants.EntryPoint.Preferences;
+                case Origins.GuidedSetup:
+                    return AIToolsSetupTelemetryConstants.EntryPoint.GuidedSetup;
+                case Origins.Self:
+                case Origins.Automatic:
+                    return AIToolsSetupTelemetryConstants.EntryPoint.Code;
+                case Origins.Unknown:
+                    return AIToolsSetupTelemetryConstants.EntryPoint.Unknown;
+                default:
+                    return AIToolsSetupTelemetryConstants.EntryPoint.Menu;
+            }
         }
 
         private static void OnSettingsGUI(Origins origin, string searchContext)
@@ -135,18 +235,11 @@ namespace Meta.XR.Editor
 
             EditorGUILayout.Space();
 
-            McpBridgeSettings.EmbeddedMode = true;
-            try { McpBridgeSettings.OnGUI(origin, searchContext); }
-            finally { McpBridgeSettings.EmbeddedMode = false; }
-
-            EditorGUILayout.Space();
-
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("Reset All to Defaults"))
             {
                 AgentBridgeSettings.ResetToDefaults();
-                McpBridgeSettings.ResetToDefaults();
             }
             EditorGUILayout.EndHorizontal();
         }
@@ -165,16 +258,48 @@ namespace Meta.XR.Editor
             // Meta/Internal debug menu or the preferences panel). Unsubscribe-then-subscribe is idempotent.
             WindowsFirewallUtility.StatusChanged -= OnFirewallStatusChanged;
             WindowsFirewallUtility.StatusChanged += OnFirewallStatusChanged;
+
+            // Providers detect some prerequisites asynchronously (e.g. the Meta VR CLI's
+            // `tools info` probe); re-derive when one lands. Unsubscribe-then-subscribe is idempotent.
+            AIToolsSetupModel.ProviderStateChanged -= OnProviderStateChanged;
+            AIToolsSetupModel.ProviderStateChanged += OnProviderStateChanged;
+
+            // Keep the bridge column live when the AI Agent Bridge is toggled elsewhere (e.g. the
+            // preferences panel). Unsubscribe-then-subscribe is idempotent.
+            AgentBridgeSettings.Activated -= OnAgentBridgeEnabledChanged;
+            AgentBridgeSettings.Activated += OnAgentBridgeEnabledChanged;
+            AgentBridgeSettings.Deactivated -= OnAgentBridgeEnabledChanged;
+            AgentBridgeSettings.Deactivated += OnAgentBridgeEnabledChanged;
+
+            // Keep the service dropdown live when the selection changes elsewhere (e.g. the
+            // preferences popup). Unsubscribe-then-subscribe is idempotent.
+            AgentBridgeSettings.SelectedServiceChanged -= OnSelectedServiceChangedExternally;
+            AgentBridgeSettings.SelectedServiceChanged += OnSelectedServiceChangedExternally;
+            AIToolsSetupTelemetry.ActiveModel = _model;
+            _openedAtMs = System.Diagnostics.Stopwatch.GetTimestamp();
+            AIToolsSetupTelemetry.EnsureSessionId();
+            AIToolsSetupTelemetry.SendEvent(
+                AIToolsSetupTelemetryConstants.FalcoEventName.Opened,
+                evt => evt.SetMetadata(
+                    AIToolsSetupTelemetryConstants.AnnotationType.EntryPoint,
+                    EntryPointFor(_pendingOrigin)),
+                isEssential: true);
             rootVisualElement.schedule.Execute(BuildUI);
             rootVisualElement.schedule.Execute(() => _ = _model.VerifyConnectionAsync(silent: true));
+            rootVisualElement.schedule.Execute(() => _ = _model.CheckSelectedServiceInstalledAsync());
         }
 
         private void BuildUI()
         {
             var root = rootVisualElement;
 
+            // Skip the save while a restore is still pending: that ScrollView is a fresh one sitting at
+            // 0 until the scheduled restore below runs, so reading it would overwrite the real offset
+            // with 0. Rebuilds can arrive faster than one per frame — the headset setup publishes a
+            // state change as each of its steps starts and finishes — which otherwise walks the panel
+            // back to the top mid-run.
             var oldScrollView = root.Q<ScrollView>();
-            if (oldScrollView != null)
+            if (oldScrollView != null && !_scrollRestorePending)
             {
                 _savedScrollOffset = oldScrollView.scrollOffset.y;
             }
@@ -209,12 +334,23 @@ namespace Meta.XR.Editor
                 AddFirewallStep(container);
             }
             AddSkillsStep(container);
+            AddProjectSetupStep(container);
             AddDivider(container);
             AddAdvancedSettingsSection(container);
 
+            // Only the newest rebuild's restore may apply: an earlier one would target a detached
+            // ScrollView and clear the pending flag while this rebuild is still at offset 0.
+            var restoreGeneration = ++_scrollRestoreGeneration;
+            _scrollRestorePending = true;
             scrollView.schedule.Execute(() =>
             {
+                if (restoreGeneration != _scrollRestoreGeneration)
+                {
+                    return;
+                }
+
                 scrollView.scrollOffset = new Vector2(0, _savedScrollOffset);
+                _scrollRestorePending = false;
             });
         }
 
@@ -321,7 +457,8 @@ namespace Meta.XR.Editor
                 row.Add(agenticCard);
             }
 
-            // Right column: AI-Powered XR Tools (the AI Agent Bridge + meta-xr-unity-runtime).
+            // Right column: the AI Agent Bridge (Unity editor tools -> local agent). It does not
+            // register an MCP server; the editor-tools MCP is internal-only.
             row.Add(BuildBridgeColumn());
 
             container.Add(row);
@@ -346,10 +483,12 @@ namespace Meta.XR.Editor
             {
                 var state = StepState.Incomplete;
                 string error = null;
+                var updateAvailable = false;
                 if (_model.PrerequisiteStates.TryGetValue(provider.Id, out var status))
                 {
                     state = status.State;
                     error = status.Error;
+                    updateAvailable = status.UpdateAvailable;
                 }
                 installComplete = state == StepState.Complete;
                 AddColumnInstallControl(card, state, error,
@@ -361,7 +500,11 @@ namespace Meta.XR.Editor
                         ?? AIToolsSetupStrings.ConnectionStatus.ProxyInstalled,
                     notInstalledText: prereq.NotInstalledStatusText
                         ?? AIToolsSetupStrings.ConnectionStatus.ProxyNotInstalled,
-                    onInstall: () => _ = _model.InstallPrerequisiteAsync(provider.Id));
+                    onInstall: () => _ = _model.InstallPrerequisiteAsync(provider.Id),
+                    updateAvailable: updateAvailable,
+                    updateText: prereq.UpdateButtonText,
+                    onUpdate: () => _ = _model.InstallPrerequisiteAsync(provider.Id),
+                    ctaUrl: prereq.CtaUrl);
             }
 
             // Register: meta-xr-operator command + run. Divider separates the install step above
@@ -402,6 +545,14 @@ namespace Meta.XR.Editor
                 card.Add(activate);
             }
 
+            // Headset connection: one action for everything a Quest APK build needs on device, with a
+            // checklist under it so each step's progress — and any single step's failure — stays visible.
+            AddDeviceSectionHeader(card,
+                AIToolsSetupStrings.Device.QuestHeading, AIToolsSetupStrings.Device.QuestDescription);
+
+            AddHeadsetControls(card);
+            AddHeadsetSetupChecklist(card);
+
             return card;
         }
 
@@ -415,8 +566,13 @@ namespace Meta.XR.Editor
                 AIToolsSetupStrings.Columns.BridgeHeading,
                 AIToolsSetupStrings.Columns.BridgeDescription);
 
+            var toolsNote = new Label(AIToolsSetupStrings.Columns.BridgeToolsNote);
+            toolsNote.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+            toolsNote.style.whiteSpace = WhiteSpace.Normal;
+            toolsNote.style.marginBottom = RLDSConstants.Spacing.SizeSM;
+            card.Add(toolsNote);
+
             var bridgeState = _model.Step1BridgeState;
-            var installComplete = bridgeState == StepState.Complete;
             AddColumnInstallControl(card, bridgeState, _model.Step1BridgeError,
                 installText: AIToolsSetupStrings.Buttons.InstallBridge,
                 installingText: AIToolsSetupStrings.Processing.Installing,
@@ -424,18 +580,19 @@ namespace Meta.XR.Editor
                 notInstalledText: AIToolsSetupStrings.ConnectionStatus.BridgeNotInstalled,
                 onInstall: () => _model.InstallBridgeAsync());
 
-            var bridgeCommand = _model.GetBridgeRegistrationCommand();
-            if (bridgeCommand != null)
-            {
-                AddCardDivider(card);
-                AddCommandBlock(card, bridgeCommand);
-                AddColumnRunAndStatus(card,
-                    installComplete,
-                    _model.Step2BridgeState,
-                    _model.Step2BridgeError,
-                    onSetup: () => _ = _model.SetupBridgeAsync(),
-                    disabledTooltip: AIToolsSetupStrings.Buttons.RunCommandBridgeDisabledTooltip);
-            }
+            // No MCP registration here: the AI Agent Bridge lets Unity's editor tools call the local
+            // AI agent; it does not register an MCP server. (The editor-tools MCP is internal-only.)
+
+            // Headset connection: adb reverse (device -> host) so a Quest build's in-headset assistant
+            // reaches this Remote Agent Server.
+            AddDeviceSectionHeader(card,
+                AIToolsSetupStrings.Device.ReverseHeading, AIToolsSetupStrings.Device.ReverseDescription);
+
+            AddDeviceAction(card, _model.AdbReverse,
+                description: null,
+                AIToolsSetupStrings.Device.ReverseButton,
+                AIToolsSetupStrings.Device.Reversing,
+                RunDeviceAction(_model.EnsureAgentBridgeReverseAsync));
 
             return card;
         }
@@ -486,11 +643,41 @@ namespace Meta.XR.Editor
 
         private void AddColumnInstallControl(VisualElement card, StepState state, string error,
             string installText, string installingText, string installedText,
-            string notInstalledText, Action onInstall)
+            string notInstalledText, Action onInstall,
+            bool updateAvailable = false, string updateText = null, Action onUpdate = null,
+            string ctaUrl = null)
         {
             switch (state)
             {
                 case StepState.Incomplete:
+                    if (!string.IsNullOrEmpty(ctaUrl))
+                    {
+                        // A prerequisite the panel can't install itself: the CTA only opens the
+                        // instructions. Deliberately NOT routed through InstallPrerequisiteAsync —
+                        // returning failure from there sets StepState.Error, which RefreshStepStates
+                        // refuses to clear, and emits a false essential
+                        // InstallCompleted{Success=false} event on every click.
+                        var ctaBtn = new RLDSButton(
+                            new ActionLinkDescription
+                            {
+                                Content = new GUIContent(installText),
+                                Action = () => UnityEngine.Application.OpenURL(ctaUrl),
+                                Id = "AIToolsPrerequisiteCtaUrl",
+                                Origin = Origins.GuidedSetup,
+                                OriginData = this
+                            },
+                            RLDSConstants.ButtonVariant.Secondary,
+                            RLDSConstants.ButtonSize.Small)
+                        {
+                            // Same download glyph the Welcome card puts on its "Download" CTA.
+                            LeftIcon = DownloadIcon
+                        }.Build();
+                        ctaBtn.style.alignSelf = Align.FlexStart;
+                        ctaBtn.style.marginBottom = RLDSConstants.Spacing.SizeSM;
+                        card.Add(ctaBtn);
+                        break;
+                    }
+
                     var installBtn = new UnityEngine.UIElements.Button(onInstall) { text = installText };
                     installBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
                     installBtn.style.alignSelf = Align.FlexStart;
@@ -503,7 +690,24 @@ namespace Meta.XR.Editor
                     break;
 
                 case StepState.Complete:
-                    AddConnectionStatus(card, installedText, StepState.Complete);
+                    if (updateAvailable)
+                    {
+                        // Installed but stale vs the SDK copy: show only the Update action (no "installed"
+                        // status) so the card reads as actionable. State stays Complete, so an outdated
+                        // proxy never blocks later steps (only a missing proxy, which is Incomplete, does).
+                        var updateBtn = new UnityEngine.UIElements.Button(onUpdate ?? onInstall)
+                        {
+                            text = updateText ?? AIToolsSetupStrings.Buttons.ReinstallMcpProxy
+                        };
+                        updateBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+                        updateBtn.style.alignSelf = Align.FlexStart;
+                        updateBtn.style.marginBottom = RLDSConstants.Spacing.SizeSM;
+                        card.Add(updateBtn);
+                    }
+                    else
+                    {
+                        AddConnectionStatus(card, installedText, StepState.Complete);
+                    }
                     break;
 
                 case StepState.Error:
@@ -517,6 +721,19 @@ namespace Meta.XR.Editor
             StepState state, string error, Action onSetup,
             string disabledTooltip)
         {
+            // A known-not-installed agent can't run setup: show the "not found" message + Try Again
+            // here (reusing the error UI) and skip the Run command / connection-status section.
+            if (_model.SelectedServiceIsKnownNotInstalled)
+            {
+                AddConnectionStatus(
+                    card,
+                    _model.SelectedServiceInstallMessage,
+                    StepState.Error,
+                    onRetry: () => _ = _model.CheckSelectedServiceInstalledAsync(),
+                    actionLabel: AIToolsSetupStrings.Buttons.TryAgain);
+                return;
+            }
+
             if (_model.CanAutoSetup() && state == StepState.Incomplete)
             {
                 var runBtn = new UnityEngine.UIElements.Button(onSetup)
@@ -651,6 +868,216 @@ namespace Meta.XR.Editor
             card.Add(divider);
         }
 
+        // --- Per-card device sub-steps (adb reverse for AgentBridge; forward + device setup for XR Operator) ---
+
+        // Opens a card's headset section: a divider, then the heading and description shared by the
+        // one-click ADB actions rendered under it.
+        private static void AddDeviceSectionHeader(VisualElement card, string heading, string description)
+        {
+            AddCardDivider(card);
+
+            var headingLabel = new Label(heading);
+            headingLabel.AddToClassList(RLDSConstants.Typography.Body2SmallLabel);
+            headingLabel.style.marginBottom = RLDSConstants.Spacing.Size2XS;
+            card.Add(headingLabel);
+
+            var desc = new Label(description);
+            desc.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+            desc.style.whiteSpace = WhiteSpace.Normal;
+            desc.style.marginBottom = RLDSConstants.Spacing.SizeSM;
+            card.Add(desc);
+        }
+
+        // Renders one one-click ADB action, matching the card's install/register fashion: what it does,
+        // then a run button / spinner / success + rerun / error + retry. Pass a null description when the
+        // section header already covers the action (a card with a single action).
+        private void AddDeviceAction(VisualElement card, AIToolsSetupModel.DeviceAction action,
+            string description, string buttonText, string runningText, Action onRun)
+        {
+            var group = new VisualElement();
+            group.style.marginBottom = RLDSConstants.Spacing.SizeSM;
+
+            if (description != null)
+            {
+                var desc = new Label(description);
+                desc.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+                desc.style.whiteSpace = WhiteSpace.Normal;
+                desc.style.marginBottom = RLDSConstants.Spacing.Size2XS;
+                group.Add(desc);
+            }
+
+            switch (action.State)
+            {
+                case StepState.Incomplete:
+                    var runBtn = new UnityEngine.UIElements.Button(onRun) { text = buttonText };
+                    runBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+                    runBtn.style.alignSelf = Align.FlexStart;
+                    group.Add(runBtn);
+                    break;
+
+                case StepState.Processing:
+                    AddConnectionStatus(group, runningText, StepState.Processing);
+                    break;
+
+                case StepState.Complete:
+                    AddConnectionStatus(group, action.Detail ?? buttonText, StepState.Complete);
+                    AddSpacer(group, RLDSConstants.Spacing.Size2XS);
+                    var rerunBtn = new UnityEngine.UIElements.Button(onRun)
+                    {
+                        text = AIToolsSetupStrings.Buttons.Rerun
+                    };
+                    rerunBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+                    rerunBtn.style.alignSelf = Align.FlexStart;
+                    group.Add(rerunBtn);
+                    break;
+
+                case StepState.Error:
+                    AddConnectionStatus(group,
+                        action.Error ?? AIToolsSetupStrings.Device.NoDeviceDetected,
+                        StepState.Error,
+                        onRetry: onRun);
+                    break;
+            }
+
+            card.Add(group);
+        }
+
+        // Fires a device action and surfaces any unhandled fault in the Console rather than losing it
+        // to an unobserved task.
+        private static Action RunDeviceAction(Func<System.Threading.Tasks.Task> start) => () =>
+            _ = start().ContinueWith(t => Debug.LogException(t.Exception),
+                System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+
+        // Set up / undo sit side by side and stay put: unlike the single-action sub-steps, neither is
+        // replaced by its status, so the pair never reflows and either action stays one click away. They
+        // share the status line below, since only one of them can have run last.
+        private void AddHeadsetControls(VisualElement card)
+        {
+            var buttons = new VisualElement();
+            buttons.style.flexDirection = FlexDirection.Row;
+            buttons.style.marginBottom = RLDSConstants.Spacing.Size2XS;
+
+            var busy = _model.IsHeadsetActionRunning;
+
+            var setUpBtn = new UnityEngine.UIElements.Button(
+                RunDeviceAction(_model.SetUpHeadsetAsync))
+            {
+                text = AIToolsSetupStrings.Device.SetUpButton
+            };
+            setUpBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+            setUpBtn.SetEnabled(!busy);
+            setUpBtn.style.marginRight = RLDSConstants.Spacing.Size2XS;
+            buttons.Add(setUpBtn);
+
+            var undoBtn = new UnityEngine.UIElements.Button(
+                RunDeviceAction(_model.UndoHeadsetSetupAsync))
+            {
+                text = AIToolsSetupStrings.Device.UndoButton
+            };
+            undoBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+            undoBtn.SetEnabled(!busy);
+            buttons.Add(undoBtn);
+
+            card.Add(buttons);
+
+            // Whichever action ran last owns the status line; at most one is ever non-Incomplete.
+            var active = _model.HeadsetSetup.State != StepState.Incomplete
+                ? _model.HeadsetSetup
+                : _model.HeadsetUndo;
+            if (active.State == StepState.Incomplete)
+            {
+                return;
+            }
+
+            var status = new VisualElement();
+            status.style.marginBottom = RLDSConstants.Spacing.Size2XS;
+            var processingText = ReferenceEquals(active, _model.HeadsetSetup)
+                ? AIToolsSetupStrings.Device.SettingUp
+                : AIToolsSetupStrings.Device.UndoingSetup;
+
+            AddConnectionStatus(status,
+                active.State switch
+                {
+                    StepState.Processing => processingText,
+                    StepState.Complete => active.Detail ?? processingText,
+                    _ => active.Error ?? AIToolsSetupStrings.Device.NoDeviceDetected,
+                },
+                active.State);
+
+            card.Add(status);
+        }
+
+        // One compact row per headset setup step, so a developer can see which step is running and
+        // which one failed without the card carrying four separate buttons.
+        private void AddHeadsetSetupChecklist(VisualElement card)
+        {
+            AddHeadsetSetupStep(card, _model.AdbForward, string.Format(
+                AIToolsSetupStrings.Device.ForwardItemFormat, AdbSetupUtility.MetaXROperatorPort));
+            AddHeadsetSetupStep(card, _model.ExperimentalFeatures,
+                AIToolsSetupStrings.Device.ExperimentalItem);
+            AddHeadsetSetupStep(card, _model.CapturePermission,
+                AIToolsSetupStrings.Device.CaptureItem);
+            AddHeadsetSetupStep(card, _model.ProximitySensor,
+                AIToolsSetupStrings.Device.ProximityItem);
+        }
+
+        private void AddHeadsetSetupStep(VisualElement card, AIToolsSetupModel.DeviceAction step,
+            string label)
+        {
+            var row = new VisualElement();
+            row.style.marginBottom = RLDSConstants.Spacing.Size2XS;
+
+            switch (step.State)
+            {
+                case StepState.Processing:
+                case StepState.Complete:
+                    AddConnectionStatus(row, label, step.State);
+                    break;
+
+                case StepState.Error:
+                    // Keep the step's own name alongside the reason: the card-level control carries the
+                    // retry, so this row only has to say which step failed and why.
+                    AddConnectionStatus(row,
+                        string.Format(AIToolsSetupStrings.Device.ItemFailedFormat, label, step.Error),
+                        StepState.Error);
+                    break;
+
+                default:
+                    row.Add(BuildPendingRow(label));
+                    break;
+            }
+
+            card.Add(row);
+        }
+
+        // Neutral "not run yet" row (grey dot + label), matching the idle dot in AddWaitingStatus.
+        private static VisualElement BuildPendingRow(string text)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems = Align.Center;
+
+            var dot = new VisualElement();
+            dot.style.width = RLDSConstants.Spacing.SizeXS;
+            dot.style.height = RLDSConstants.Spacing.SizeXS;
+            dot.style.borderTopLeftRadius = RLDSConstants.Radius.Full;
+            dot.style.borderTopRightRadius = RLDSConstants.Radius.Full;
+            dot.style.borderBottomLeftRadius = RLDSConstants.Radius.Full;
+            dot.style.borderBottomRightRadius = RLDSConstants.Radius.Full;
+            dot.style.backgroundColor = RLDSStyles.Colors.IconSecondary;
+            dot.style.flexShrink = 0;
+            dot.style.marginRight = RLDSConstants.Spacing.Size2XS;
+            row.Add(dot);
+
+            var label = new Label(text);
+            label.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+            label.style.whiteSpace = WhiteSpace.Normal;
+            label.style.flexGrow = 1;
+            row.Add(label);
+
+            return row;
+        }
+
         // --- Step 3 (Windows only): Allow local network connections (Windows Firewall) ---
 
         private void AddFirewallStep(VisualElement container)
@@ -726,6 +1153,45 @@ namespace Meta.XR.Editor
             AddSpacer(container, RLDSConstants.Spacing.SizeSM);
         }
 
+        // --- Final step: Review Project Setup Tool ---
+
+        private void AddProjectSetupStep(VisualElement container)
+        {
+            AddStepTitle(container, AIToolsSetupStrings.Steps.ReviewProjectSetup);
+
+            var card = MakeProductCard(grow: false);
+
+            var desc = new Label(AIToolsSetupStrings.ProjectSetup.Description);
+            desc.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+            desc.style.whiteSpace = WhiteSpace.Normal;
+            desc.style.marginBottom = RLDSConstants.Spacing.SizeSM;
+            card.Add(desc);
+
+            // Only call out outstanding rules for this window's AI-tools features (e.g. Meta XR
+            // Operator) — those are the rules this wizard is responsible for. Other Project Setup Tool
+            // rules are the developer's to review via the button below, so we don't warn on them here.
+            if (_model.HasOutstandingAIToolRules)
+            {
+                AddConnectionStatus(card,
+                    string.Format(AIToolsSetupStrings.ProjectSetup.OutstandingAIToolWarningFormat,
+                        _model.OutstandingAIToolRuleCount),
+                    StepState.Error);
+                AddSpacer(card, RLDSConstants.Spacing.SizeSM);
+            }
+
+            var openBtn = new UnityEngine.UIElements.Button(
+                () => OVRProjectSetupSettingsProvider.OpenSettingsWindow(Origins.GuidedSetup))
+            {
+                text = AIToolsSetupStrings.ProjectSetup.OpenButton
+            };
+            openBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+            openBtn.style.alignSelf = Align.FlexStart;
+            card.Add(openBtn);
+
+            container.Add(card);
+            AddSpacer(container, RLDSConstants.Spacing.SizeLG);
+        }
+
         // Service IDs to hide from the wizard's selector even though they're registered
         // (e.g. test-only mocks that exist purely to validate 3P discovery in unit tests).
         private static readonly HashSet<string> HiddenServiceIds = new()
@@ -755,12 +1221,28 @@ namespace Meta.XR.Editor
 
             var dropdown = new DropdownMenu(items, _model.SelectedServiceId, id =>
             {
+                var previousId = _model.SelectedServiceId;
                 _model.OnSelectedServiceChanged(id);
-                AgentBridgeSettings.SelectedServiceId.SetValue(id, Origins.Menu, AgentBridgeSettings.Owner);
+                AgentBridgeSettings.SetSelectedService(id, Origins.Menu);
+                AIToolsSetupTelemetry.SendEvent(
+                    AIToolsSetupTelemetryConstants.FalcoEventName.ServiceSelected,
+                    evt =>
+                    {
+                        evt.SetMetadata(AIToolsSetupTelemetryConstants.AnnotationType.ServiceId, id);
+                        evt.SetMetadata(AIToolsSetupTelemetryConstants.AnnotationType.PreviousServiceId, previousId);
+                        evt.SetMetadata(AIToolsSetupTelemetryConstants.AnnotationType.CanAutoRegister,
+                            AIToolsSetupModel.ServiceSupportsAutoRegister(id));
+                    },
+                    isEssential: true);
                 BuildUI();
                 // Re-detect connection status for the newly selected assistant; the columns
                 // show their default (Run command + checking spinner) until this completes.
                 _ = _model.VerifyConnectionAsync(silent: true);
+                // Re-check whether the newly selected assistant's CLI is installed so the XR Operator
+                // Run/Status card reflects the new selection (not-found message + Try Again when
+                // missing). Must run after the SetSelectedService call above, since detection
+                // re-syncs off that persisted setting.
+                _ = _model.CheckSelectedServiceInstalledAsync();
             });
 
             var element = dropdown.Build();

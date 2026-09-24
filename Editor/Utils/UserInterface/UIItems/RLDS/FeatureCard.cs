@@ -46,6 +46,7 @@ namespace Meta.XR.Editor.UserInterface
         public event Action Clicked;
         public event Action CtaClicked;
         public event Action LinkClicked;
+        public event Action InfoClicked;
 
         private readonly string _label;
         private readonly string _description;
@@ -57,9 +58,12 @@ namespace Meta.XR.Editor.UserInterface
         private readonly string _ctaText;
         private readonly TextureContent _ctaIcon;
         private readonly TextureContent _linkIcon;
+        private readonly TextureContent _infoIcon;
+        private readonly string _infoTooltip;
         private readonly string _badgeText;
         private readonly BadgeTagType _badgeType;
         private readonly bool _isActive;
+        private readonly bool _ctaEnabled;
         private readonly string _id;
 
         private bool _selected;
@@ -89,6 +93,9 @@ namespace Meta.XR.Editor.UserInterface
             string badgeText = null,
             BadgeTagType badgeType = BadgeTagType.Neutral,
             bool isActive = false,
+            bool ctaEnabled = true,
+            TextureContent infoIcon = null,
+            string infoTooltip = null,
             string id = null)
         {
             _label = label;
@@ -101,9 +108,12 @@ namespace Meta.XR.Editor.UserInterface
             _ctaText = ctaText;
             _ctaIcon = ctaIcon;
             _linkIcon = linkIcon;
+            _infoIcon = infoIcon;
+            _infoTooltip = infoTooltip;
             _badgeText = badgeText;
             _badgeType = badgeType;
             _isActive = isActive;
+            _ctaEnabled = ctaEnabled;
             _id = id;
         }
 
@@ -220,9 +230,19 @@ namespace Meta.XR.Editor.UserInterface
             // Grow the title/description block so the status badge is pushed to the bottom of the card.
             textGroup.style.flexGrow = 1;
 
+            var labelRow = new VisualElement();
+            labelRow.AddToClassList(RLDSConstants.FeatureCard.LabelRow);
+
             var label = new UnityEngine.UIElements.Label(_label);
             label.AddToClassList(RLDSConstants.FeatureCard.Label);
-            textGroup.Add(label);
+            labelRow.Add(label);
+
+            if (_infoIcon != null)
+            {
+                labelRow.Add(BuildInfoButton());
+            }
+
+            textGroup.Add(labelRow);
 
             var desc = new UnityEngine.UIElements.Label(_description);
             desc.AddToClassList(RLDSConstants.FeatureCard.Description);
@@ -263,7 +283,35 @@ namespace Meta.XR.Editor.UserInterface
             ctaLabel.AddToClassList(RLDSConstants.FeatureCard.CtaButtonLabel);
             ctaButton.Add(ctaLabel);
 
+            ctaButton.EnableInClassList(RLDSConstants.FeatureCard.CtaButtonDisabled, !_ctaEnabled);
+            ctaButton.SetEnabled(_ctaEnabled);
             _root.Add(ctaButton);
+        }
+
+        private VisualElement BuildInfoButton()
+        {
+            var infoButton = new VisualElement
+            {
+                tooltip = _infoTooltip
+            };
+            infoButton.AddToClassList(RLDSConstants.FeatureCard.InfoButton);
+            infoButton.RegisterCallback<ClickEvent>(evt =>
+            {
+                evt.StopPropagation();
+                RLDSTelemetry.SendInteraction(
+                    infoButton, GetType().Name, _id ?? _label,
+                    _infoTooltip ?? _label, actionData: "info");
+                InfoClicked?.Invoke();
+            });
+
+            var infoIconEl = new VisualElement
+            {
+                pickingMode = PickingMode.Ignore
+            };
+            infoIconEl.AddToClassList(RLDSConstants.FeatureCard.InfoButtonIcon);
+            _infoIcon.RegisterToImageLoaded(tex => infoIconEl.style.backgroundImage = tex as UnityEngine.Texture2D);
+            infoButton.Add(infoIconEl);
+            return infoButton;
         }
     }
 }

@@ -49,7 +49,7 @@ namespace Meta.XR.Guides.Editor.About
         private static int? _latestVersion;
         public static int? LatestVersion => _latestVersion ??= PackageList.ComputeLatestPackageVersion(PackageName);
 
-        [MenuItem("Meta/About Meta XR SDK", false, 2000)]
+        [MenuItem("Window/Meta/About Meta XR SDK", false, 4300)]
         private static void SetupGuide()
         {
             ShowGuide(Origins.Menu, true);
@@ -157,11 +157,15 @@ namespace Meta.XR.Guides.Editor.About
 
         private const string NuxRampUpKey = "nux_flow";
 
+        // Killswitch: routes straight to WelcomeWindow regardless of NuxFlow completion, without
+        // persisting completion, so turning this off again restores the wizard for those users.
+        private const string NuxSkipOnboardingRampUpKey = "nux_skip_onboarding";
+
         private static void ShowGuide(Origins origin, bool forceShow = false)
         {
             if (FeatureRampUpManager.GetRemoteKeysResult(NuxRampUpKey))
             {
-                if (NuxFlow.IsNuxCompleted)
+                if (NuxFlow.IsNuxCompleted || FeatureRampUpManager.GetRemoteKeysResult(NuxSkipOnboardingRampUpKey))
                 {
                     if (forceShow || WelcomeWindow.ShouldShowOnLaunch)
                     {

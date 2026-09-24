@@ -36,12 +36,12 @@ using System.IO;
 class OVREngineConfigurationUpdater
 {
     private const string prefName = "OVREngineConfigurationUpdater_Enabled";
-    private const string menuItemName = "Meta/Options/Use Required Project Settings";
+    private const string menuItemName = "Window/Meta/Options/Use Required Project Settings";
     private const string androidAssetsPath = "Assets/Plugins/Android/assets";
     private const string androidManifestPath = "Assets/Plugins/Android/AndroidManifest.xml";
     static bool setPrefsForUtilities;
 
-    [MenuItem(menuItemName)]
+    [MenuItem(menuItemName, false, 3300)]
     static void ToggleUtilities()
     {
         setPrefsForUtilities = !setPrefsForUtilities;

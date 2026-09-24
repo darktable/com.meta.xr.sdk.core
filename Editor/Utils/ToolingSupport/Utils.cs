@@ -31,7 +31,11 @@ namespace Meta.XR.Editor.ToolingSupport
     {
         internal static readonly string MetaPublicName = "Meta";
         internal static readonly string MetaXRPublicName = "Meta XR";
-        internal static readonly string MetaMenuPath = $"{MetaPublicName}/Tools/";
+        internal static readonly string MetaMenuPath = $"Window/{MetaPublicName}/Tools/";
+
+        // Base priority for all Window/Meta menu items. Chosen so the Meta submenu
+        // sorts below TextMeshPro (priorities 2025-2200) in the Window dropdown.
+        internal const int MetaMenuBasePriority = 2300;
 
 
         internal const string MqdhUrl = "odh://feedback-hub";

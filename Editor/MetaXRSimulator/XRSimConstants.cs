@@ -65,7 +65,7 @@ namespace Meta.XR.Simulator.Editor
         public const string PreviousXrSimConfigEnvKey = "META_XRSIM_CONFIG_JSON_PREV";
         public const string ProjectTelemetryId = "META_PROJECT_TELEMETRY_ID";
         public const string PublicName = "Meta XR Simulator";
-        public const string MenuPath = "Meta/" + PublicName;
+        public const string MenuPath = "Window/Meta/" + PublicName;
         public const string LegacyPackageName = "com.meta.xr.simulator"; // Old XR Simulator v1 package
 
         public const string OculusXRPackageName = "com.unity.xr.oculus";

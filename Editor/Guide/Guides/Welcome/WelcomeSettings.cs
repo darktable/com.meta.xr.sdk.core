@@ -23,6 +23,7 @@ using System.Linq;
 using Meta.XR.Editor.Id;
 using Meta.XR.Editor.ToolingSupport;
 using Meta.XR.Editor.UserInterface;
+using Meta.XR.Guides.Editor.SdkUpgrader;
 using UnityEditor;
 using UnityEngine;
 
@@ -35,44 +36,36 @@ namespace Meta.XR.Guides.Editor.Welcome
         public const int WindowHeight = 768;
         public const string WindowTitle = "Welcome to Meta XR SDK";
         public const string ReleaseNotesUrl = "https://developers.meta.com/horizon/downloads/package/meta-xr-core-sdk";
+        public const string MetaVrCliDownloadUrl = "https://github.com/meta-quest/agentic-tools#prerequisites";
+        public const string MetaVrCliDocsUrl = "https://github.com/meta-quest/agentic-tools#metavr-cli-quick-reference";
 
-        internal static class Content
+        // Fixed UI chrome — labels that are NOT remote-controlled. (The remote-managed copy —
+        // subtitle, featured, resources, xr-tools order — lives in WelcomeContentManager.Content.)
+        internal static class Labels
         {
-            public const string CoverTitle = "Meta XR SDK";
-            public const string CoverSubtitle = "Build immersive experiences for Quest and Meta devices with Unity.";
-            public const string OpenSdkMenuLabel = "Open SDK menu";
-            public const string ViewReleaseNotesLabel = "View release notes";
+            public const string CoverTitle = Meta.XR.Editor.StatusMenu.StatusMenuSettings.Labels.CoverTitle;
+            public const string CoverSubtitle = Meta.XR.Editor.StatusMenu.StatusMenuSettings.Labels.CoverSubtitle;
+            public const string OpenSdkMenuButton = "Open SDK menu";
+            public const string ReleaseNotesButton = "View release notes";
+            public const string ShowOnLaunchToggle = "Show this window on launch";
+            public const string CloseButton = "Close";
             public const string ResourcesHeader = "Resources";
             public const string XrToolsHeader = "XR tools";
-            public const string ShowOnLaunchLabel = "Show this window on launch";
-            public const string CloseLabel = "Close";
+            public const string AlertBannerMessage = AlertBannerMessages.AlertBannerMessage;
+            public const string AlertBannerMessagePinned = AlertBannerMessages.AlertBannerMessagePinned;
         }
 
-        internal static class Resources
-        {
-            public static readonly ResourceDef[] All =
-            {
-                // In-editor action (no external-link icon).
-                new("Building Blocks",
-                    "Pre-built XR components you can drag and drop into your scene.",
-                    "Browse building blocks",
-                    () => EditorApplication.ExecuteMenuItem("Meta/Tools/Building Blocks")),
-                // Web links (external-link icon appended automatically).
-                new("Samples and Showcases",
-                    "Working examples and best practices for Meta XR development.",
-                    "Browse samples",
-                    "https://developers.meta.com/horizon/code-samples/unity"),
-                new("Building with Unity",
-                    "Guides and tutorials to get started with Meta XR SDK.",
-                    "Read documentation",
-                    "https://developers.meta.com/horizon/develop/unity"),
-                new("API Reference",
-                    "Detailed API documentation for all Meta XR SDK modules.",
-                    "View API reference",
-                    "https://developers.meta.com/horizon/reference/unity"),
-            };
-        }
+        // The Building Blocks resource card is a fixed, in-editor entry (not remote-controlled): it
+        // opens the Building Blocks menu instead of a URL, and renders first in the Resources section
+        // ahead of the remote-controlled cards.
+        internal static readonly ResourceDef BuildingBlocks = new(
+            "Building Blocks",
+            "Pre-built XR components you can drag and drop into your scene.",
+            "Browse building blocks",
+            () => EditorApplication.ExecuteMenuItem("Window/Meta/Tools/Building Blocks"));
 
+        // A resource card: either an in-editor action (Building Blocks) or an external URL (the
+        // remote-controlled cards). Reused for both so the Resources section renders them uniformly.
         internal readonly struct ResourceDef
         {
             public readonly string Label;
@@ -80,11 +73,10 @@ namespace Meta.XR.Guides.Editor.Welcome
             public readonly string LinkText;
             public readonly Action LinkAction;
 
-            // True when the link opens an external web page. The card appends an
-            // external-link icon for these (and only these) — see BuildResourcesSection.
+            // External-URL cards show the external-link icon; in-editor actions don't.
             public readonly bool OpensUrl;
 
-            // Link that runs a custom in-editor action (no external-link icon).
+            // In-editor action (no external-link icon).
             public ResourceDef(string label, string description, string linkText, Action linkAction)
             {
                 Label = label;
@@ -94,7 +86,7 @@ namespace Meta.XR.Guides.Editor.Welcome
                 OpensUrl = false;
             }
 
-            // Link that opens a web page in the browser (external-link icon appended).
+            // Opens an external URL (external-link icon).
             public ResourceDef(string label, string description, string linkText, string url)
             {
                 Label = label;
@@ -107,6 +99,20 @@ namespace Meta.XR.Guides.Editor.Welcome
 
         internal static class XrTools
         {
+            internal readonly struct MetaVrCliCtaState
+            {
+                public readonly string Text;
+                public readonly Action Action;
+                public readonly Action InfoAction;
+
+                public MetaVrCliCtaState(string text, Action action, Action infoAction)
+                {
+                    Text = text;
+                    Action = action;
+                    InfoAction = infoAction;
+                }
+            }
+
             public static readonly XrToolDef[] All =
             {
                 new("AI Tools",
@@ -117,6 +123,23 @@ namespace Meta.XR.Guides.Editor.Welcome
                     activeCtaText: "View settings", inactiveCtaText: "Setup",
                     activeAction: () => OpenTool("AI Tools"),
                     inactiveAction: () => OpenTool("AI Tools")),
+                new("Meta VR CLI",
+                    "Use Quest developer tools from your terminal or AI assistant to find documentation and assets, manage devices, and analyze performance.",
+                    registryNameHint: "Meta VR CLI",
+                    isActive: () => SdkUpgraderData.GetMetaVrCliState(null) != SdkUpgraderData.MetaVrCliState.NotInstalled,
+                    activeBadgeText: "Installed", inactiveBadgeText: "Not installed",
+                    activeCtaText: "View docs", inactiveCtaText: "Download",
+                    activeAction: () => Application.OpenURL(MetaVrCliDocsUrl),
+                    inactiveAction: () => Application.OpenURL(MetaVrCliDownloadUrl),
+                    infoAction: () => Application.OpenURL(MetaVrCliDocsUrl)),
+                new("Device Readiness Check",
+                    "Check hand tracking, field of view, and other device readiness signals for XR development.",
+                    registryNameHint: "Hands readiness",
+                    isActive: () => true,
+                    activeBadgeText: "Available", inactiveBadgeText: "Available",
+                    activeCtaText: "Open", inactiveCtaText: "Open",
+                    activeAction: () => OpenToolByHint("Hands readiness"),
+                    inactiveAction: () => OpenToolByHint("Hands readiness")),
                 new("Runtime optimizer",
                     "Identify performance bottlenecks in XR apps and get actionable optimization recommendations. Enable to analyze whether apps are CPU or GPU bound.",
                     registryNameHint: "Runtime Optimizer",
@@ -217,6 +240,71 @@ namespace Meta.XR.Guides.Editor.Welcome
                         "https://developers.meta.com/horizon/downloads/package/meta-haptics-studio-win/"))),
             };
 
+            internal static XrToolDef ApplyRemoteContent(
+                XrToolDef tool,
+                WelcomeContentManager.XrToolContent content)
+            {
+                var activeAction = tool.ActiveAction;
+                if (!string.IsNullOrEmpty(content.activeUrl))
+                {
+                    activeAction = () => Application.OpenURL(content.activeUrl);
+                }
+
+                var inactiveAction = tool.InactiveAction;
+                if (!string.IsNullOrEmpty(content.inactiveUrl))
+                {
+                    inactiveAction = () => Application.OpenURL(content.inactiveUrl);
+                }
+
+                return new XrToolDef(
+                    Coalesce(content.label, tool.Label),
+                    Coalesce(content.description, tool.Description),
+                    tool.RegistryNameHint,
+                    tool.IsActive,
+                    Coalesce(content.activeBadgeText, tool.ActiveBadgeText),
+                    Coalesce(content.inactiveBadgeText, tool.InactiveBadgeText),
+                    Coalesce(content.activeCtaText, tool.ActiveCtaText),
+                    Coalesce(content.inactiveCtaText, tool.InactiveCtaText),
+                    activeAction,
+                    inactiveAction,
+                    infoAction: tool.InfoAction,
+                    enableDirectInstall: content.enableDirectInstall,
+                    windowsOnly: tool.WindowsOnly);
+            }
+
+            internal static MetaVrCliCtaState ResolveMetaVrCliCta(
+                XrToolDef configuredDef,
+                bool supportsDirectInstall) =>
+                configuredDef.EnableDirectInstall && supportsDirectInstall
+                    ? new MetaVrCliCtaState("Install", () => MetaVrCliInstaller.Install(), configuredDef.InfoAction)
+                    : new MetaVrCliCtaState(configuredDef.InactiveCtaText, configuredDef.InactiveAction, null);
+
+            /// <summary>The <c>id</c>/<c>RegistryNameHint</c> of the Meta VR CLI XR tool entry.</summary>
+            internal const string MetaVrCliToolId = "Meta VR CLI";
+
+            /// <summary>
+            /// The currently resolved <c>enableDirectInstall</c> flag for the Meta VR CLI, i.e. the
+            /// remote-content half of the <see cref="ResolveMetaVrCliCta"/> decision (the other half
+            /// being <see cref="MetaVrCliInstaller.SupportsDirectInstall"/>). Exposed so the AI Tools
+            /// setup panel, which offers the same CTA, reads the same flag from the same place
+            /// instead of duplicating the lookup and drifting out of sync.
+            /// </summary>
+            internal static bool IsMetaVrCliDirectInstallEnabled()
+            {
+                var def = Array.Find(All, t => t.RegistryNameHint == MetaVrCliToolId);
+                if (def.RegistryNameHint == null) return false;
+
+                var content = Array.Find(
+                    WelcomeContentManager.Content.xrTools
+                        ?? Array.Empty<WelcomeContentManager.XrToolContent>(),
+                    t => t.id == MetaVrCliToolId);
+
+                return ApplyRemoteContent(def, content).EnableDirectInstall;
+            }
+
+            private static string Coalesce(string value, string fallback) =>
+                string.IsNullOrEmpty(value) ? fallback : value;
+
             private static string FindToolInfoText(string nameHint)
             {
                 var descriptor = ToolRegistry.Registry
@@ -261,6 +349,8 @@ namespace Meta.XR.Guides.Editor.Welcome
             public readonly string InactiveCtaText;
             public readonly Action ActiveAction;
             public readonly Action InactiveAction;
+            public readonly Action InfoAction;
+            public readonly bool EnableDirectInstall;
 
             // Tools that only exist on Windows (e.g. Runtime Optimizer, Meta Quest Link) —
             // hidden on non-Windows editors. See BuildXrToolsSection.
@@ -273,6 +363,8 @@ namespace Meta.XR.Guides.Editor.Welcome
                 string activeBadgeText, string inactiveBadgeText,
                 string activeCtaText, string inactiveCtaText,
                 Action activeAction, Action inactiveAction,
+                Action infoAction = null,
+                bool enableDirectInstall = false,
                 bool windowsOnly = false)
             {
                 Label = label;
@@ -285,6 +377,8 @@ namespace Meta.XR.Guides.Editor.Welcome
                 InactiveCtaText = inactiveCtaText;
                 ActiveAction = activeAction;
                 InactiveAction = inactiveAction;
+                InfoAction = infoAction;
+                EnableDirectInstall = enableDirectInstall;
                 WindowsOnly = windowsOnly;
             }
         }

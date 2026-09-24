@@ -124,7 +124,7 @@ namespace Meta.XR.Editor.UserInterface
 
             var unifiedEvent = new Meta.XR.Telemetry.UnifiedEventData(Telemetry.FalcoEventName.LinkClick)
             {
-                isEssential = false,
+                isEssential = true,
                 productType = Meta.XR.Telemetry.TelemetryProductType.Editor
             };
             unifiedEvent.SetMetadata(Telemetry.AnnotationType.Label, label);
@@ -164,7 +164,7 @@ namespace Meta.XR.Editor.UserInterface
         /// </summary>
         public static void SendPageClose(Origins origin, string id, string actionType, string label = null)
         {
-            SendPageEvent(Telemetry.FalcoEventName.PageClose, false, origin, id, actionType, label);
+            SendPageEvent(Telemetry.FalcoEventName.PageClose, true, origin, id, actionType, label);
         }
 
         private static void SendPageEvent(

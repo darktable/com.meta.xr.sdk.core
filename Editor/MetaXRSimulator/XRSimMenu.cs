@@ -32,7 +32,7 @@ namespace Meta.XR.Simulator.Editor
         private const string DeactivateMenuPath = XRSimConstants.MenuPath + "/Deactivate";
         private const string StatusMenuPath = XRSimConstants.MenuPath + "/Status";
 
-        [MenuItem(ActivateMenuPath, false, 1)]
+        [MenuItem(ActivateMenuPath, false, 2301)]
         public static void ActivateSimulator()
         {
 #pragma warning disable CS4014
@@ -40,13 +40,13 @@ namespace Meta.XR.Simulator.Editor
 #pragma warning restore CS4014
         }
 
-        [MenuItem(DeactivateMenuPath, false, 2)]
+        [MenuItem(DeactivateMenuPath, false, 2302)]
         public static void DeactivateSimulator()
         {
             Utils.XRSimUtils.DeactivateSimulator(false, Origin.Menu);
         }
 
-        [MenuItem(StatusMenuPath, false, 4)]
+        [MenuItem(StatusMenuPath, false, 2304)]
         public static void ShowStatus()
         {
             bool isActive = Utils.XRSimUtils.IsSimulatorActivated();

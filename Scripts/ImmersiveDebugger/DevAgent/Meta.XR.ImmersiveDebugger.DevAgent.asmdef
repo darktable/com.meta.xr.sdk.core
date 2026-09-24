@@ -10,8 +10,7 @@
         "Meta.Wit.Dictation",
         "Meta.WitAi",
         "Meta.WitAi.Lib",
-        "Meta.XR.ImmersiveDebugger.Interface",
-        "meta.xr.ai.mcpbridge"
+        "Meta.XR.ImmersiveDebugger.Interface"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -25,6 +24,11 @@
             "name": "com.meta.xr.sdk.voice",
             "expression": "",
             "define": "HAS_META_VOICE_SDK"
+        },
+        {
+            "name": "com.unity.xr.openxr",
+            "expression": "",
+            "define": "USING_XR_SDK_OPENXR"
         },
         {
             "define": "OVR_UNITY_PACKAGE_MANAGER",

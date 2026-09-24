@@ -324,6 +324,10 @@ MonoBehaviour:
   minDistFromRig: 4
   maxDistFromRig: 18
   yRange: {x: 0.5, y: 10}
+  neonBorderShader: {fileID: 4800000, guid: 27f455953d22dac48ac352376cb66736, type: 3}
+  neonGridShader: {fileID: 4800000, guid: 360de92a045ddc74cb67828035ddb331, type: 3}
+  jazzCupShader: {fileID: 4800000, guid: 9bf99c438f04e01459afe5ff4fb48c82, type: 3}
+  vaporwaveGradientShader: {fileID: 4800000, guid: 732ca47ae82d776449c443fb8ed9c2b4, type: 3}
 --- !u!4 &179017552
 Transform:
   m_ObjectHideFlags: 0

@@ -207,7 +207,7 @@ class OVRScreenshotWizard : ScriptableWizard
     /// <summary>
     /// Unity Editor menu option to take a screenshot
     /// </summary>
-    [MenuItem("Meta/Tools/OVR Screenshot Wizard", false, 100000)]
+    [MenuItem("Window/Meta/Tools/OVR Screenshot Wizard", false, 100000)]
     static void TakeOVRScreenshot()
     {
         OVRScreenshotWizard wizard =

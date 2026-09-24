@@ -197,6 +197,7 @@ namespace Meta.HandReadinessTool.Editor.UI
             bottomBar.Add(buttonContainer);
             return bottomBar;
         }
+
     }
 
     /// <summary>
@@ -219,5 +220,7 @@ namespace Meta.HandReadinessTool.Editor.UI
             TextureContent.CreateContent("icon_copy.png", Category);
         public static readonly TextureContent ApplyAutomated =
             TextureContent.CreateContent("icon_apply_automated.png", Category);
+        public static readonly TextureContent MarkComplete =
+            TextureContent.CreateContent("icon_checkbox_check.png", Category);
     }
 }

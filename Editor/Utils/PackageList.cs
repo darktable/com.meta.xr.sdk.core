@@ -305,7 +305,42 @@ namespace Meta.XR.Editor.Utils
             => ComputePackageVersion(packageName, packageInfo => packageInfo.version);
 
         internal static int? ComputeLatestPackageVersion(string packageName)
-            => ComputePackageVersion(packageName, packageInfo => packageInfo.versions.latest);
+        {
+            // Returning null as an indicator that it has not been retrieved yet
+            if (!PackageManagerListAvailable) return null;
+
+            var package = GetPackage(packageName);
+            if (package == null) return 0;
+
+            // Registry dist-tags "latest" can be a deprecated/internal relbranch build (e.g.
+            // "205.0.0-relbranch+public"); only clean MAJOR.MINOR.PATCH releases are valid upgrades.
+            return SelectLatestStableMajor(package.versions.all);
+        }
+
+        internal static int SelectLatestStableMajor(IEnumerable<string> versions)
+        {
+            var latestMajor = 0;
+            Version highest = null;
+
+            foreach (var versionString in versions ?? Enumerable.Empty<string>())
+            {
+                if (string.IsNullOrEmpty(versionString)
+                    || versionString.Contains("-")
+                    || versionString.Contains("+")
+                    || !Version.TryParse(versionString, out var parsed))
+                {
+                    continue;
+                }
+
+                if (highest == null || parsed > highest)
+                {
+                    highest = parsed;
+                    latestMajor = parsed.Major;
+                }
+            }
+
+            return latestMajor;
+        }
 
         private static int? ComputePackageVersion(string packageName,
             Func<PackageInfo, string> extractVersionFromPackageInfo)

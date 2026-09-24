@@ -52,6 +52,19 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
                 return;
             }
 
+#if USING_XR_SDK_OPENXR
+            // The Meta XR Operator tool binder is part of the AI Assistant feature, so its runtime tools
+            // are registered only when the assistant is enabled (gated above). It is added to the manager
+            // GameObject (this interface's parent) so it persists via DontDestroyOnLoad.
+            var managerObject = debugInterface.transform.parent != null
+                ? debugInterface.transform.parent.gameObject
+                : debugInterface.gameObject;
+            if (managerObject.GetComponent<XROperator.ImmersiveDebuggerBinder>() == null)
+            {
+                managerObject.AddComponent<XROperator.ImmersiveDebuggerBinder>();
+            }
+#endif
+
             try
             {
                 // Create and configure the LLM Dialog Panel

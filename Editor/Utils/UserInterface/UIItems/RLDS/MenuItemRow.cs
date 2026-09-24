@@ -211,6 +211,7 @@ namespace Meta.XR.Editor.UserInterface
                 var spacer = new VisualElement();
                 spacer.AddToClassList(RLDSConstants.MenuItem.Spacer);
                 _root.Add(spacer);
+                _trailingContent.style.flexShrink = 0;
                 _root.Add(_trailingContent);
                 return;
             }

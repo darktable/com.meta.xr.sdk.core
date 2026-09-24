@@ -18,12 +18,20 @@
  * limitations under the License.
  */
 
+#if UNITY_6000_3_OR_NEWER
+#define USE_MAINTOOLBAR
+#endif
+
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Meta.XR.Editor.Id;
+using Meta.XR.Editor.Settings;
 using Meta.XR.Editor.ToolingSupport;
 using Meta.XR.Editor.UserInterface;
 using Meta.XR.Editor.UserInterface.RLDS;
+
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -33,9 +41,16 @@ namespace Meta.XR.Editor.StatusMenu
     internal class StatusMenuDrawer : RLDSEditorWindow
     {
         private const string TelemetryWindowId = "SdkMenu";
-
+        private const string CorePackageId = "com.meta.xr.sdk.core";
         protected override string TelemetryId => TelemetryWindowId;
-        protected override Origins TelemetryOrigin => Origins.StatusMenu;
+        protected override Origins TelemetryOrigin => _origin;
+
+        [SerializeField] private Origins _origin = Origins.Unknown;
+
+        // Both ShowDropdown and ShowWindow set this explicitly right before creating the instance, so
+        // the only path that falls back to this default is a window restored from a Unity layout at
+        // startup (OnEnable runs with no caller) — which is always the windowed surface.
+        private static Origins _nextOrigin = Origins.StatusMenuWindow;
 
         private const float MenuWidth = 432f;
         private const float HeaderHeight = 60f;
@@ -55,19 +70,43 @@ namespace Meta.XR.Editor.StatusMenu
 
         private const float BannerHeight = 72f;
 
-        private static StatusMenuDrawer _instance;
+        private static StatusMenuDrawer _windowInstance;
+        private static StatusMenuDrawer _dropdownInstance;
         private IReadOnlyList<ToolDescriptor> _items;
         private string _versionText;
         private bool _isUpdateAvailable;
         private string _latestVersionText;
+        private bool _isDropdown;
 
-        internal static bool Visible => _instance != null;
+        private const string AlertBannerDismissedKey = "StatusMenu.AlertBannerDismissed";
 
+        private static bool AlertBannerDismissed => EditorUserSettings.GetConfigValue(AlertBannerDismissedKey) == "true";
+
+        private static void SetAlertBannerDismissed(bool value)
+        {
+            EditorUserSettings.SetConfigValue(AlertBannerDismissedKey, value ? "true" : "false");
+        }
+
+        private static readonly TextureContent PinIcon =
+            TextureContent.CreateContent("pin.png", TextureContent.Categories.Generic, null);
+
+        internal static bool Visible => _windowInstance != null;
+        private static StatusMenuDrawer _instance => _windowInstance ?? _dropdownInstance;
+
+        /// <summary>
+        /// Used to display the StatusMenuDrawer as a dropdown from the toolbar button
+        /// </summary>
+        /// <param name="source">The screen position of the dropdown</param>
+        /// <param name="items">The items to render in the window, </param>
+        /// <param name="isUpdateAvailable">Whether the Oculus SDK needs to be updated</param>
+        /// <param name="latestVersion">The latest version of the package in use</param>
         internal static void ShowDropdown(Rect source, IReadOnlyList<ToolDescriptor> items, bool isUpdateAvailable = false, string latestVersion = null)
         {
-            if (_instance != null)
+            // Close existing dropdown only, do not affect docked window version.
+            if (_dropdownInstance != null)
             {
-                _instance.Close();
+                _dropdownInstance.Close();
+                _dropdownInstance = null;
             }
 
             if (items == null || items.Count == 0) return;
@@ -78,14 +117,94 @@ namespace Meta.XR.Editor.StatusMenu
                 return;
             }
 
+            _nextOrigin = Origins.StatusMenu;
             var instance = CreateInstance<StatusMenuDrawer>();
-            instance._items = items;
-            instance._versionText = GetSdkVersion();
-            instance._isUpdateAvailable = isUpdateAvailable;
-            instance._latestVersionText = latestVersion;
+            instance._isDropdown = true;
+            instance.InitInstanceWithItems(items, isUpdateAvailable, latestVersion);
+
             instance.ShowAsDropDown(source, new Vector2(MenuWidth, instance.ComputeHeight()));
             instance.Focus();
-            _instance = instance;
+            _dropdownInstance = instance;
+        }
+
+        /// <summary>
+        /// A utility method, used to initialize a StatusMenuDrawer instance with the items to render in the window, and the version text.
+        /// This should be called from ShowDropdown or ShowWindow and not from OnEnable, as the items are not available yet in OnEnable.
+        /// </summary>
+        /// <param name="instance">The StatusMenuDrawer being initialized</param>
+        /// <param name="items"></param>
+        private void InitInstanceWithItems(IReadOnlyList<ToolDescriptor> items, bool isUpdateAvailable = false, string latestVersion = null)
+        {
+            _items = items;
+            _versionText = GetSdkVersion();
+            _isUpdateAvailable = isUpdateAvailable;
+            _latestVersionText = latestVersion;
+        }
+
+        /// <summary>
+        /// Mirroring ShowDropdown for versions of Unity that don't support Reflection, and therefore need a dedicated window vs the editor toolbar button dropdown
+        /// </summary>
+        /// <param name="items">The items to render in the window, </param>
+        /// <param name="isUpdateAvailable">Whether the Oculus SDK needs to be updated</param>
+        /// <param name="latestVersion">The latest version of the package in use</param>
+        internal static void ShowWindow(IReadOnlyList<ToolDescriptor> items, bool isUpdateAvailable = false, string latestVersion = null)
+        {
+            // GetWindow ensures single window instance; do not close dropdown here – dropdown is transient and will auto-close on focus loss, but we allow coexistence.
+            // If an old window instance exists tracked separately, GetWindow will reuse it anyway.
+            if (items == null || items.Count == 0) return;
+
+            _nextOrigin = Origins.StatusMenuWindow;
+
+            System.Type inspectorType = null;
+            var allWindows = UnityEngine.Resources.FindObjectsOfTypeAll<UnityEditor.EditorWindow>();
+
+            foreach (var w in allWindows)
+            {
+                // Inspector window type name is stable "InspectorWindow" across Unity versions. Use GetType().Name to avoid compile-time reference to internal type.
+                if (w != null && w.GetType().Name == "InspectorWindow")
+                {
+                    inspectorType = w.GetType();
+                    break;
+                }
+            }
+            // Fallback also try by title content in case type name changes in future Unity versions – look for window with title containing "Inspector".
+            if (inspectorType == null)
+            {
+                foreach (var w in allWindows)
+                {
+                    if (w != null && w.titleContent != null && w.titleContent.text != null && w.titleContent.text.Contains("Inspector"))
+                    {
+                        inspectorType = w.GetType();
+                        break;
+                    }
+                }
+            }
+            StatusMenuDrawer instance;
+            if (inspectorType != null)
+            {
+                instance = EditorWindow.GetWindow<StatusMenuDrawer>("Meta XR SDK", false, inspectorType);
+            }
+            else
+            {
+                instance = EditorWindow.GetWindow<StatusMenuDrawer>("Meta XR SDK");
+            }
+
+            instance._isDropdown = false;
+            instance.InitInstanceWithItems(items, isUpdateAvailable, latestVersion);
+
+            // GetWindow triggers CreateGUI before Init, so UI was built empty. Rebuild now that data is set.
+            instance.RebuildUI();
+
+            instance.Focus();
+            _windowInstance = instance;
+        }
+
+        internal void RebuildUI()
+        {
+            if (rootVisualElement != null)
+            {
+                BuildUI(rootVisualElement);
+            }
         }
 
         private float ComputeHeight()
@@ -167,21 +286,132 @@ namespace Meta.XR.Editor.StatusMenu
         private void BuildUI(VisualElement root)
         {
             root.Clear();
-            // Tag the dropdown so every RLDS row/header/banner reports this surface as its path.
-            RLDSTelemetry.SetScope(root, Origins.StatusMenu, TelemetryWindowId);
+            // Tag the surface so every RLDS row/header/banner reports it as its path.
+            RLDSTelemetry.SetScope(root, _origin, TelemetryWindowId);
+
+            if (_items == null)
+            {
+                return;
+            }
+
+            // Guard against building UI before assets are imported – ToolDescriptors' EnablementDelegate may access RuntimeSettings which loads ScriptableObject assets.
+            // This mirrors WelcomeWindow pattern of try-catch and deferring rebuild, but we explicitly check EditorReady to avoid log spam from OVRRuntimeAssetsBase.
+            if (!Meta.XR.Editor.Callbacks.InitializeOnLoad.EditorReady)
+            {
+                Meta.XR.Editor.Callbacks.InitializeOnLoad.Register(() => BuildUI(root));
+                return;
+            }
 
             var container = new VisualElement();
             container.style.flexGrow = 1f;
             container.AddToClassList(RLDSConstants.BeveledDropdown.Base);
             root.Add(container);
 
-            BuildHeader(container);
-            BuildDivider(container);
+            // Add Cover banner and Alert banner at top for window version only, matching Welcome screen design but without buttons.
+            // Dropdown version remains compact without cover to preserve existing dropdown height behavior.
+            if (!_isDropdown)
+            {
+                BuildCoverSection(container);
+                BuildAlertBannerSection(container);
+            }
+            else
+            {
+                // We should only use the non-banner header in the dropdown version.
+                BuildHeader(container);
+                BuildDivider(container);
+            }
             if (_isUpdateAvailable)
             {
                 BuildBanner(container);
             }
             BuildItemSections(container);
+        }
+
+        private void BuildCoverSection(VisualElement parent)
+        {
+            var cover = new CoverImage
+            {
+                FullBleed = true,
+                CoverIcon = Meta.XR.Editor.UserInterface.Styles.Contents.SdkCoverIcon
+            };
+
+            var coverElement = cover.Build();
+            Meta.XR.Editor.UserInterface.Styles.Contents.CoverBg.RegisterToImageLoaded(tex =>
+                coverElement.style.backgroundImage = new StyleBackground(tex as Texture2D));
+            // Override min-height to about half of Welcome's 261px default to make StatusMenu cover more compact.
+            coverElement.style.minHeight = 130;
+            coverElement.style.maxHeight = 140;
+            coverElement.style.alignItems = Align.Center;
+            parent.Add(coverElement);
+
+            // Scale down and vertically center the decorative watermark icon to fit half-height cover without clipping.
+            // USS defaults to 220px square at top:21px right:40px which overflows 130px height. Override to 110px and center vertically, keep right aligned.
+            var iconContainer = coverElement.Q(className: RLDSConstants.CoverImage.Icon);
+            if (iconContainer != null)
+            {
+                iconContainer.style.width = 110;
+                iconContainer.style.height = 110;
+                iconContainer.style.top = StyleKeyword.Null;
+                iconContainer.style.bottom = StyleKeyword.Null;
+                iconContainer.style.right = 20;
+                iconContainer.style.position = Position.Absolute;
+                // Center vertically within 130px height: (130-110)/2 =10px top offset
+                iconContainer.style.top = 10;
+                iconContainer.style.alignSelf = Align.Center;
+            }
+            var iconImage = coverElement.Q(className: RLDSConstants.CoverImage.IconImage);
+            if (iconImage != null)
+            {
+                iconImage.style.width = 110;
+                iconImage.style.height = 110;
+            }
+
+            cover.ContentArea.style.paddingLeft = RLDSConstants.Spacing.SizeXL; // 30% reduction from Size3XL 40px
+            cover.ContentArea.style.paddingRight = RLDSConstants.Spacing.Size3XL;
+            cover.ContentArea.style.paddingBottom = RLDSConstants.Spacing.SizeMD;
+            cover.ContentArea.style.paddingTop = RLDSConstants.Spacing.SizeMD;
+            cover.ContentArea.style.justifyContent = Justify.Center;
+
+            var version = ToolUsage.GetSdkVersion();
+            if (version.HasValue)
+            {
+                var versionBadge = new BadgePill($"Version {version.Value}", BadgePillType.Warning, BadgePillSize.Small).Build();
+                cover.ContentArea.Add(versionBadge);
+            }
+
+            var title = new UnityEngine.UIElements.Label(StatusMenuSettings.Labels.CoverTitle);
+            title.AddToClassList(RLDSConstants.Typography.Heading1);
+            title.AddToClassList(RLDSConstants.Utilities.MarginTopXS);
+            title.style.fontSize = new StyleLength(new Length(26, LengthUnit.Pixel)); // 20% smaller than Heading1 32px
+            title.style.unityFontStyleAndWeight = FontStyle.Bold;
+            cover.ContentArea.Add(title);
+
+            var subtitle = new UnityEngine.UIElements.Label(StatusMenuSettings.Labels.CoverSubtitle);
+            subtitle.AddToClassList(RLDSConstants.Typography.Body1Text);
+            subtitle.AddToClassList(RLDSConstants.Utilities.MarginTopXS);
+            subtitle.style.fontSize = new StyleLength(new Length(11, LengthUnit.Pixel)); // 20% smaller than Body1 14px
+            cover.ContentArea.Add(subtitle);
+            // No buttons per spec – cover is informational only in StatusMenu window version.
+        }
+
+        private void BuildAlertBannerSection(VisualElement parent)
+        {
+            if (AlertBannerDismissed)
+            {
+                return;
+            }
+
+#if USE_MAINTOOLBAR
+            var message = AlertBannerMessages.AlertBannerMessagePinned + "\nYou can also re-open this menu as a window through <b>Window > Meta > Meta XR SDK</b>";
+            var icon = PinIcon;
+#else
+            var message = AlertBannerMessages.AlertBannerMessage;
+            TextureContent icon = null;
+#endif
+            var banner = new AlertBanner(message, icon, () => SetAlertBannerDismissed(true));
+            // AlertBanner lives in Meta.XR.Editor.UserInterface namespace but is defined in StatusMenu folder for reuse.
+            var bannerElement = banner.Build();
+            parent.Add(bannerElement);
         }
 
         private void BuildHeader(VisualElement root)
@@ -191,21 +421,17 @@ namespace Meta.XR.Editor.StatusMenu
                 .OrderBy(i => i.Order)
                 .Select(i => new HeaderAction(i.Icon, () =>
                 {
-                    i.OnClickDelegate?.Invoke(Origins.StatusMenu);
+                    i.OnClickDelegate?.Invoke(_origin);
                     Close();
                 }, i.Id))
                 .ToList();
 
+            // The "· Update available" inline link is intentionally omitted — the update banner
+            // ("v{N} available") shown below is the single update signal.
             var header = new MenuHeader
             {
                 Version = _versionText,
-                Actions = headerActions,
-                UpdateAvailable = _isUpdateAvailable
-            };
-            header.UpdateAvailableClicked += () =>
-            {
-                OpenAbout();
-                Close();
+                Actions = headerActions
             };
             root.Add(header.Build());
         }
@@ -219,7 +445,14 @@ namespace Meta.XR.Editor.StatusMenu
             };
             banner.CtaClicked += () =>
             {
-                OpenAbout();
+                if (StatusMenu.UpdateCtaDestination == SdkUpdateCtaDestination.UpgradeAssistant)
+                {
+                    OpenUpdateAssistant();
+                }
+                else
+                {
+                    UnityEditor.PackageManager.UI.Window.Open(CorePackageId);
+                }
                 Close();
             };
             root.Add(banner.Build());
@@ -329,8 +562,9 @@ namespace Meta.XR.Editor.StatusMenu
             row.Clicked += () =>
             {
                 descriptor.MarkSeen();
-                descriptor.OnClickDelegate?.Invoke(Origins.StatusMenu);
-                if (descriptor.CloseOnClick)
+                descriptor.OnClickDelegate?.Invoke(_origin);
+                // Window version should stay open to allow multiple actions; dropdown version closes on click to mimic menu behavior.
+                if (_isDropdown && descriptor.CloseOnClick)
                 {
                     Close();
                 }
@@ -338,6 +572,7 @@ namespace Meta.XR.Editor.StatusMenu
                 {
                     // Rebuild so status badges re-evaluate after an in-menu toggle
                     // (e.g. the Meta XR Simulator enable/disable from this same dropdown).
+                    // For window version we always rebuild and never close, even if CloseOnClick is true.
                     BuildUI(rootVisualElement);
                     Repaint();
                 }
@@ -408,7 +643,7 @@ namespace Meta.XR.Editor.StatusMenu
             link.RegisterCallback<ClickEvent>(evt =>
             {
                 evt.StopPropagation();
-                onClick?.Invoke(Origins.StatusMenu);
+                onClick?.Invoke(_origin);
                 Close();
             });
             line.Add(link);
@@ -461,21 +696,36 @@ namespace Meta.XR.Editor.StatusMenu
 
         private static void OpenAbout()
         {
-            EditorApplication.ExecuteMenuItem("Meta/About Meta XR SDK");
+            EditorApplication.ExecuteMenuItem("Window/Meta/About Meta XR SDK");
         }
 
         private const string SdkUpdateAssistantName = "SDK update assistant";
+        private const string SdkUpgradeAssistantName = "SDK Upgrade Assistant";
 
         private void OpenUpdateAssistant()
         {
-            var descriptor = _items?.FirstOrDefault(i => i.Name == SdkUpdateAssistantName);
+            // Prefer the SDK Upgrade Guide window by its stable tool name, then the legacy "SDK update
+            // assistant" tool, then the About window. Matching by name (rather than "first tool that
+            // reports a version") avoids opening an unrelated tool such as About, whose
+            // AvailableVersionDelegate also resolves to a value.
+            // Resolved through the full ToolRegistry (not the menu list _items) so it still finds the
+            // upgrade guide, which is registered but not a standing menu row (AddToStatusMenu = false).
+            var descriptor =
+                ToolRegistry.Registry.FirstOrDefault(i => i.Name == SdkUpgradeAssistantName)
+                ?? ToolRegistry.Registry.FirstOrDefault(i => i.Name == SdkUpdateAssistantName);
             if (descriptor?.OnClickDelegate != null)
             {
-                descriptor.OnClickDelegate(Origins.StatusMenu);
+                descriptor.OnClickDelegate(_origin);
                 return;
             }
 
-            // Fallback if the SDK Update Assistant is not registered (e.g. external SDK build).
+            // Fallback if no update-surfacing tool is registered (e.g. minimal external SDK build).
+            // Log when both name lookups miss so a future rename of either tool's Name is visible
+            // rather than silently landing the user on About. (These are display-name string matches
+            // because this Utils-layer drawer intentionally doesn't reference the Guides assembly.)
+            UnityEngine.Debug.LogWarning(
+                $"[SdkUpgrader] No update-assistant tool matched '{SdkUpgradeAssistantName}' or "
+                + $"'{SdkUpdateAssistantName}' in the ToolRegistry; opening About instead.");
             OpenAbout();
         }
 
@@ -487,14 +737,98 @@ namespace Meta.XR.Editor.StatusMenu
 
         protected override void OnEnable()
         {
+            // Adopt the surface chosen by the caller on first creation only
+            if (_origin == Origins.Unknown)
+            {
+                _origin = _nextOrigin;
+            }
+
             base.OnEnable();
+            if (!Meta.XR.Editor.Callbacks.InitializeOnLoad.EditorReady)
+            {
+                Meta.XR.Editor.Callbacks.InitializeOnLoad.Register(OnEditorReadyRebuild);
+                return;
+            }
+            OnEditorReadyRebuild();
+        }
+
+        private void OnEditorReadyRebuild()
+        {
+            if (_items == null)
+            {
+                InitInstanceWithItems(DeriveItems(), false, null);
+            }
+
+            // Fixes a race condition if the Meta XR SDK window is open on editor start up. Need to have tools finished initializing before building UI.
+            ToolRegistry.OnInitialized -= OnToolsInitialized;
+            ToolRegistry.OnInitialized += OnToolsInitialized;
+
+            // Refresh badges live when a tool's status changes
+            ToolRegistry.OnStatusChanged -= OnToolStatusChanged;
+            ToolRegistry.OnStatusChanged += OnToolStatusChanged;
+
+            if (ToolRegistry.IsInitialized)
+            {
+                OnToolsInitialized();
+            }
+
+            EditorApplication.delayCall += RebuildIfEmpty;
+        }
+
+        private static List<ToolDescriptor> DeriveItems() =>
+            ToolRegistry.Registry
+                .Where(i => i.AddToStatusMenu && i.IsRampedUp)
+                .OrderBy(i => i.Order)
+                .ToList();
+
+        private void OnToolsInitialized()
+        {
+            if (this == null)
+            {
+                return;
+            }
+
+            _items = DeriveItems();
+            if (rootVisualElement != null && Meta.XR.Editor.Callbacks.InitializeOnLoad.EditorReady)
+            {
+                BuildUI(rootVisualElement);
+                Repaint();
+            }
+        }
+
+        private void OnToolStatusChanged(ToolDescriptor descriptor)
+        {
+            if (this == null) return;
+            if (rootVisualElement == null) return;
+            if (!Meta.XR.Editor.Callbacks.InitializeOnLoad.EditorReady) return;
+            BuildUI(rootVisualElement);
+            Repaint();
+        }
+
+        private void OnBecameVisible() => RebuildIfEmpty();
+
+        private void OnFocus() => RebuildIfEmpty();
+
+        private void RebuildIfEmpty()
+        {
+            if (this == null) return;
+            if (rootVisualElement == null) return;
+            if (!Meta.XR.Editor.Callbacks.InitializeOnLoad.EditorReady) return;
+            // If UI was built empty due to null _items during CreateGUI, rebuild now that OnEnable has rehydrated.
+            if (rootVisualElement.childCount == 0 && _items != null)
+            {
+                BuildUI(rootVisualElement);
+                Repaint();
+            }
         }
 
         protected override void OnDestroy()
         {
             base.OnDestroy();
-            if (_instance != this) return;
-            _instance = null;
+            ToolRegistry.OnInitialized -= OnToolsInitialized;
+            ToolRegistry.OnStatusChanged -= OnToolStatusChanged;
+            if (_windowInstance == this) _windowInstance = null;
+            if (_dropdownInstance == this) _dropdownInstance = null;
         }
     }
 }

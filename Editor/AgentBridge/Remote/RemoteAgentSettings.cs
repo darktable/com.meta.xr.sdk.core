@@ -48,7 +48,7 @@ namespace Meta.XR.AI.AgentBridge
             Default = 48735,
             Label = "Port",
             Tooltip = "The port number for the Remote Agent HTTP server. " +
-                      "Remote clients (e.g., Quest headsets) will connect to this port.",
+                      "Remote clients use this port through ADB reverse or network fallback.",
             SendTelemetry = false
         };
 
@@ -118,7 +118,7 @@ namespace Meta.XR.AI.AgentBridge
         {
             EditorGUILayout.LabelField("Remote Server", EditorStyles.boldLabel);
             EditorGUILayout.LabelField(
-                "Allows devices on the local network (e.g., Quest headsets) to send AI inference requests to this Unity Editor instance.",
+                "Allows devices connected through ADB reverse or the local network (e.g., Quest headsets) to send AI inference requests to this Unity Editor instance.",
                 EditorStyles.wordWrappedMiniLabel);
 
             // Server status and Start/Stop button on the same line
@@ -225,7 +225,7 @@ namespace Meta.XR.AI.AgentBridge
             EditorGUILayout.LabelField(
                 "Authentication prevents unauthorized devices on the same network from sending requests to this server. " +
                 "A unique token is generated here and automatically injected into builds at build time, ensuring only apps built from this project can connect. " +
-                "This token is shared between AgentBridge and MCPBridge.",
+                "This token is used by AgentBridge remote connections.",
                 EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.Space();
 

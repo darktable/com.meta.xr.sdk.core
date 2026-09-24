@@ -417,10 +417,13 @@ namespace Meta.HandReadinessTool.Editor
             footerDivider.style.marginBottom = RLDSConstants.Spacing.SizeMD;
             footer.Add(footerDivider);
 
-            // Helper text — secondary supporting style.
+            // Reflects whether the issue is already resolved, so a completed item doesn't read
+            // as still-actionable.
             var helperText = new Label(
-                "Copy these details to share with your AI assistant. When you're done implementing, " +
-                "mark this complete and we'll verify your changes.");
+                _issue.IsFixed
+                    ? "This recommendation is marked complete. Copy the details anytime to revisit it."
+                    : "Copy these details to share with your AI assistant. When you're done implementing, " +
+                      "mark this complete and we'll verify your changes.");
             helperText.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
             helperText.style.whiteSpace = WhiteSpace.Normal;
             helperText.style.marginTop = RLDSConstants.Spacing.SizeXS;
@@ -450,17 +453,23 @@ namespace Meta.HandReadinessTool.Editor
             copyBtn.style.marginRight = RLDSConstants.Spacing.SizeSM;
             buttonRow.Add(copyBtn);
 
+            // An already-fixed issue shows a disabled "Completed" button, so navigating onto a
+            // resolved recommendation doesn't present it as still actionable.
             var completeBtn = new RLDSButton(
                 new ActionLinkDescription
                 {
-                    Content = new GUIContent("\u2713 Mark as complete"),
-                    Action = OnMarkComplete,
+                    Content = new GUIContent(_issue.IsFixed ? "\u2713 Completed" : "\u2713 Mark as complete"),
+                    Action = _issue.IsFixed ? (Action)(() => { }) : OnMarkComplete,
                 },
                 RLDSConstants.ButtonVariant.Primary,
                 RLDSConstants.ButtonSize.Large).Build();
             completeBtn.style.flexGrow = 1;
             completeBtn.style.flexBasis = 0;
             completeBtn.style.justifyContent = Justify.Center;
+            if (_issue.IsFixed)
+            {
+                completeBtn.SetEnabled(false);
+            }
             buttonRow.Add(completeBtn);
 
             footer.Add(buttonRow);

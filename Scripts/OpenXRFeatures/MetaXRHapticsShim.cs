@@ -377,18 +377,18 @@ namespace Meta.XR
                     SubactionPath = (XrPath)path
                 };
 
-                var hapticVibration = new XrHapticParametricVibrationEXTX1
+                var hapticVibration = new XrHapticParametricVibrationEXT
                 {
-                    Type = XrHapticParametricVibrationEXTX1.StructureType,
+                    Type = XrHapticParametricVibrationEXT.StructureType,
                     AmplitudePointCount = (uint)hapticsVibration.AmplitudePointCount,
-                    AmplitudePoints = (XrHapticParametricPointEXTX1*)hapticsVibration.AmplitudePoints,
+                    AmplitudePoints = (XrHapticParametricPointEXT*)hapticsVibration.AmplitudePoints,
                     FrequencyPointCount = (uint)hapticsVibration.FrequencyPointCount,
-                    FrequencyPoints = (XrHapticParametricPointEXTX1*)hapticsVibration.FrequencyPoints,
+                    FrequencyPoints = (XrHapticParametricPointEXT*)hapticsVibration.FrequencyPoints,
                     TransientCount = (uint)hapticsVibration.TransientCount,
-                    Transients = (XrHapticParametricTransientEXTX1*)hapticsVibration.Transients,
+                    Transients = (XrHapticParametricTransientEXT*)hapticsVibration.Transients,
                     MinFrequencyHz = hapticsVibration.MinFrequencyHz,
                     MaxFrequencyHz = hapticsVibration.MaxFrequencyHz,
-                    StreamFrameType = (XrHapticParametricStreamFrameTypeEXTX1)hapticsVibration.StreamFrameType,
+                    StreamFrameType = (XrHapticParametricStreamFrameTypeEXT)hapticsVibration.StreamFrameType,
                 };
 
 
@@ -408,18 +408,18 @@ namespace Meta.XR
                     SubactionPath = (XrPath)path
                 };
 
-                var hapticVibration = new XrHapticParametricVibrationEXTX1
+                var hapticVibration = new XrHapticParametricVibrationEXT
                 {
-                    Type = XrHapticParametricVibrationEXTX1.StructureType,
+                    Type = XrHapticParametricVibrationEXT.StructureType,
                     AmplitudePointCount = (uint)hapticsVibration.AmplitudePointCount,
-                    AmplitudePoints = (XrHapticParametricPointEXTX1*)hapticsVibration.AmplitudePoints,
+                    AmplitudePoints = (XrHapticParametricPointEXT*)hapticsVibration.AmplitudePoints,
                     FrequencyPointCount = (uint)hapticsVibration.FrequencyPointCount,
-                    FrequencyPoints = (XrHapticParametricPointEXTX1*)hapticsVibration.FrequencyPoints,
+                    FrequencyPoints = (XrHapticParametricPointEXT*)hapticsVibration.FrequencyPoints,
                     TransientCount = (uint)hapticsVibration.TransientCount,
-                    Transients = (XrHapticParametricTransientEXTX1*)hapticsVibration.Transients,
+                    Transients = (XrHapticParametricTransientEXT*)hapticsVibration.Transients,
                     MinFrequencyHz = hapticsVibration.MinFrequencyHz,
                     MaxFrequencyHz = hapticsVibration.MaxFrequencyHz,
-                    StreamFrameType = (XrHapticParametricStreamFrameTypeEXTX1)hapticsVibration.StreamFrameType,
+                    StreamFrameType = (XrHapticParametricStreamFrameTypeEXT)hapticsVibration.StreamFrameType,
                 };
 
                 if (Command.xrApplyHapticFeedback(Session, in hapticsInfo, (XrHapticBaseHeader*)&hapticVibration) != XrResult.Success)
@@ -503,15 +503,15 @@ namespace Meta.XR
                 return OVRPlugin.Result.Failure_Unsupported;
             }
 
-            if (Command.xrHapticParametricGetPropertiesEXTX1 == null)
+            if (Command.xrHapticParametricGetPropertiesEXT == null)
             {
-                LogError("xrHapticParametricGetPropertiesEXTX1 command was not loaded.");
+                LogError("xrHapticParametricGetPropertiesEXT command was not loaded.");
                 return OVRPlugin.Result.Failure_Unsupported;
             }
 
-            XrHapticParametricPropertiesEXTX1 properties = new XrHapticParametricPropertiesEXTX1
+            XrHapticParametricPropertiesEXT properties = new XrHapticParametricPropertiesEXT
             {
-                Type = XrHapticParametricPropertiesEXTX1.StructureType
+                Type = XrHapticParametricPropertiesEXT.StructureType
             };
             if ((controllerMask & OVRPlugin.Controller.LTouch) != 0 || (controllerMask & OVRPlugin.Controller.LHand) != 0)
             {
@@ -525,7 +525,7 @@ namespace Meta.XR
                     SubactionPath = (XrPath)path
                 };
 
-                if (Command.xrHapticParametricGetPropertiesEXTX1(Session, in hapticsInfo, ref properties) != XrResult.Success)
+                if (Command.xrHapticParametricGetPropertiesEXT(Session, in hapticsInfo, ref properties) != XrResult.Success)
                     return OVRPlugin.Result.Failure;
             }
             else if ((controllerMask & OVRPlugin.Controller.RTouch) != 0 || (controllerMask & OVRPlugin.Controller.RHand) != 0)
@@ -540,7 +540,7 @@ namespace Meta.XR
                     SubactionPath = (XrPath)path
                 };
 
-                if (Command.xrHapticParametricGetPropertiesEXTX1(Session, in hapticsInfo, ref properties) != XrResult.Success)
+                if (Command.xrHapticParametricGetPropertiesEXT(Session, in hapticsInfo, ref properties) != XrResult.Success)
                     return OVRPlugin.Result.Failure;
             }
 

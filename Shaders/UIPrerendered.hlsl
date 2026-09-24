@@ -20,8 +20,17 @@ struct v2f {
 };
 
 sampler2D _MainTex;
-float4 _MainTex_ST;
+float4 _MainTex_ST_Left;
+float4 _MainTex_ST_Right;
 float4 _Color;
+
+// Per-eye scale/offset selected by stereo eye index. In mono mode the C# code sets
+// both to the same value so this branches to identical UVs.
+half2 _ApplyPerEyeST(float2 baseUV)
+{
+    float4 st = (unity_StereoEyeIndex == 0) ? _MainTex_ST_Left : _MainTex_ST_Right;
+    return baseUV * st.xy + st.zw;
+}
 
 v2f vert(appdata_t v) {
     v2f o;
@@ -29,7 +38,7 @@ v2f vert(appdata_t v) {
     UNITY_TRANSFER_INSTANCE_ID(v, o);
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
     o.vertex = mul(unity_MatrixVP, mul(unity_ObjectToWorld, v.vertex));
-    o.texcoord = TRANSFORM_TEX(v.texcoord, _MainTex);
+    o.texcoord = _ApplyPerEyeST(v.texcoord);
     return o;
 }
 
@@ -111,7 +120,7 @@ float4 frag(v2f i) : SV_Target {
         UNITY_TRANSFER_INSTANCE_ID(v, o);
         UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
         o.vertex = mul(unity_MatrixVP, mul(unity_ObjectToWorld, v.vertex));
-        o.texcoord = TRANSFORM_TEX(v.texcoord, _MainTex);
+        o.texcoord = _ApplyPerEyeST(v.texcoord);
         // for motion vectors, only apply camera movement
         o.curPositionCS = o.vertex;
         if (unity_MotionVectorsParams.y == 0.0)

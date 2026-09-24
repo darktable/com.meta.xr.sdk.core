@@ -126,6 +126,7 @@ namespace Meta.XR.AI.AgentBridge
 
                 var localIp = NetworkUtilities.GetLocalNetworkAddress();
                 Log.Info($"{LogPrefix} Server started on port {port} (accessible at {localIp}:{port})");
+                TryConfigureAdbReverse(port);
 
                 // Surface a one-time hint if the Windows Firewall would block inbound device connections.
                 WindowsFirewallUtility.WarnIfNotConfigured();
@@ -191,6 +192,41 @@ namespace Meta.XR.AI.AgentBridge
         {
             Stop();
             Start();
+        }
+
+        /// <summary>
+        /// Provider that configures ADB reverse for the given TCP port, returning true when at least one
+        /// device was set up. Supplied by a higher-level editor assembly (AI Tools Setup) that can reach
+        /// the Oculus editor ADB tooling; this assembly cannot reference it without a dependency cycle.
+        /// </summary>
+        internal static Func<int, bool>? AdbReverseConfigurer;
+
+        /// <summary>
+        /// Configures ADB reverse so connected Android devices can reach this editor server at 127.0.0.1,
+        /// via the registered <see cref="AdbReverseConfigurer"/>. No-ops (network fallback) when none is set.
+        /// </summary>
+        internal static bool TryConfigureAdbReverse(int port)
+        {
+            if (port <= 0)
+            {
+                return false;
+            }
+
+            var configurer = AdbReverseConfigurer;
+            if (configurer == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return configurer(port);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"{LogPrefix} Failed to configure ADB reverse: {ex.Message}");
+                return false;
+            }
         }
 
         #region Request Handling

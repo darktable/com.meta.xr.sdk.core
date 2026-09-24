@@ -5,7 +5,6 @@
         "Oculus.VR",
         "Oculus.VR.Editor",
         "meta.xr.ai.agentbridge.editor",
-        "meta.xr.ai.mcpbridge.editor",
         "Meta.XR.Editor.Id",
         "Meta.XR.Editor.ToolingSupport",
         "Meta.XR.Editor.UserInterface",

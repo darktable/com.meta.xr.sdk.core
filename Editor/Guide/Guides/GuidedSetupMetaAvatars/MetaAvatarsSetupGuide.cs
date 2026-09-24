@@ -54,7 +54,7 @@ namespace Meta.XR.Guides.Editor
         private static Icon _appIdStatusLabel;
         private const string SectionColor = "#ffffff";
 
-        [MenuItem("Meta/Guides/Meta Avatars Setup Guide")]
+        [MenuItem("Window/Meta/Guides/Meta Avatars Setup Guide", false, 3300)]
         private static void SetupGuide()
         {
             new MetaAvatarsSetupGuide().ShowWindow(Origins.Menu, true);

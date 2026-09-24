@@ -4,8 +4,10 @@
     "references": [
         "Meta.XR.Editor.Callbacks",
         "Meta.XR.Editor.Reflection",
+        "Meta.XR.FovSimulator",
         "Meta.XR.ImmersiveDebugger.Interface",
         "Oculus.VR",
+        "Unity.XR.OpenXR",
         "Unity.InputSystem"
     ],
     "includePlatforms": [],

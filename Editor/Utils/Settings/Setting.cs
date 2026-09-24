@@ -87,7 +87,7 @@ namespace Meta.XR.Editor.Settings
 
             var unifiedEvent = new UnifiedEventData(Telemetry.FalcoEventName.SettingsChanged)
             {
-                isEssential = false,
+                isEssential = true,
                 productType = TelemetryProductType.Editor
             };
             unifiedEvent.SetMetadata(Telemetry.AnnotationType.Label, Label ?? Uid);

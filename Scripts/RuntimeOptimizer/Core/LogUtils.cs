@@ -53,6 +53,21 @@ namespace Meta.XR.RuntimeOptimizer.Core
             }
         }
 
+        /// <summary>Reports something the user should see that is not a failure.</summary>
+        /// <remarks>
+        /// Cancelling a capture because the user pressed Launch, or a render stage prime that
+        /// could not start, are both expected outcomes that the console should surface without
+        /// claiming the tool broke. They still carry telemetry, under a separate event so they
+        /// do not inflate the error counts the team watches.
+        /// </remarks>
+        public static void DebugLogWarning(object message)
+        {
+            UnityEngine.Debug.LogWarning(message);
+
+            string jsonData = ErrorDataStr.ToJsonStr(message.ToString());
+            RuntimeOptimizerPlugin.SendEvent("warning_log", jsonData);
+        }
+
         public static void DebugLogError(object message)
         {
             UnityEngine.Debug.LogError(message);

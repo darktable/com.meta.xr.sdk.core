@@ -237,6 +237,8 @@ public class OVRControllerHelper : MonoBehaviour,
             case OVRPlugin.SystemHeadset.Meta_Quest_3S:
             case OVRPlugin.SystemHeadset.Meta_Link_Quest_3:
             case OVRPlugin.SystemHeadset.Meta_Link_Quest_3S:
+            case OVRPlugin.SystemHeadset.Meta_VR_Glasses:
+            case OVRPlugin.SystemHeadset.Meta_Link_VR_Glasses:
                 if (profile == OVRPlugin.InteractionProfile.TouchPro)
                 {
                     activeControllerType = ControllerType.TouchPro;

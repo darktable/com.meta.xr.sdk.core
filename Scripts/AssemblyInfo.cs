@@ -53,3 +53,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("meta.xr.ai.mcpbridge.editor")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.BuildingBlocks.AIBlocks")]
 [assembly: InternalsVisibleTo("Meta.XR.HandReadinessTool.Editor")]
+[assembly: InternalsVisibleTo("Meta.XR.FovSimulator")]

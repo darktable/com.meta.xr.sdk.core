@@ -51,7 +51,7 @@ internal static class OVRProjectSetupPassthrough
             group: Group,
             isDone: buildTargetGroup =>
             {
-                if (OVRProjectSetupUtils.FindComponentInScene<OVRPassthroughLayer>() == null)
+                if (!OVRPassthroughHelper.IsPassthroughAvailable())
                 {
                     return true;
                 }
@@ -95,13 +95,11 @@ internal static class OVRProjectSetupPassthrough
                 var ovrCameraRig = OVRProjectSetupUtils.FindComponentInScene<OVRCameraRig>();
                 return ovrCameraRig != null &&
                        OVRPassthroughHelper.HasCentralCamera(ovrCameraRig) &&
-#pragma warning disable CS0618 // TODO change the wording here once we fully deprecate flexible layering. We will still want to clear the camera background.
-                       OVRPassthroughHelper.IsAnyPassthroughLayerUnderlay() &&
-#pragma warning restore CS0618
+                       OVRPassthroughHelper.IsPassthroughAvailable() &&
                        // Apply the rule only when there are no building blocks present in the scene
                        !OVRProjectSetupUtils.FindComponentInScene<BuildingBlock>();
             },
-            message: "When using Passthrough as an underlay, set the camera background to transparent to reveal the passthrough feed",
+            message: "When using Passthrough, set the camera background to transparent to reveal the passthrough feed",
             fix: _ =>
             {
                 var ovrCameraRig = OVRProjectSetupUtils.FindComponentInScene<OVRCameraRig>();

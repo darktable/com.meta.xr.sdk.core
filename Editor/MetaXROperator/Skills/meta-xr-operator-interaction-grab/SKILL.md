@@ -2,18 +2,8 @@
 name: hz-meta-xr-operator-interaction-grab
 description: "How to grab and manipulate Meta XR Interaction SDK grabbable interactables in Unity using Meta XR Operator. Covers identifying grabbable types (close-range HandGrab/GrabInteractable, distance grab, hinged interactables like lids/doors/drawers), performing the grab via aim pose, choosing controller motions that move the target as intended, and identifying which of the three movement providers (relative-to-hand, manipulate-in-place, pull-to-hand) an interactable uses."
 allowed-tools:
+  - Bash(metavr:*)
   - Bash(hzdb:*)
-tags:
-  - agentic-xr
-  - openxr
-  - unity
-  - meta
-  - interaction-sdk
-  - grab
-  - hand-grab
-  - distance-grab
-  - movement
-  - interactable
 ---
 
 # Meta XR Operator Interaction Grab

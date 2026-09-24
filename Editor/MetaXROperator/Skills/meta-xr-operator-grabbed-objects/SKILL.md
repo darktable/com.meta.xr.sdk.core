@@ -1,19 +1,9 @@
 ---
 name: hz-meta-xr-operator-grabbed-objects
-description: Aims and positions objects currently held by simulated controllers in Meta Quest and Horizon OS XR apps, including pose-offset calibration and quaternion math for grip and aim poses.
+description: Aims and positions objects held by simulated controllers or hands in Meta Quest and Horizon OS XR apps, including pose-offset calibration and quaternion math for grip and aim poses.
 allowed-tools:
+  - Bash(metavr:*)
   - Bash(hzdb:*)
-tags:
-  - agentic-xr
-  - openxr
-  - unity
-  - aiming
-  - grip
-  - aim
-  - grabbed
-  - orientation
-  - position
-  - offset
 ---
 
 # Meta XR Operator Grabbed Object Control
@@ -28,7 +18,7 @@ Offsets depend on which **pose type** (aim vs grip) you use. **Always calibrate 
 
 ## Step 1: Grab the Object
 
-Position the controller at the object and press grip (see coordinates skill for world-to-OpenXR conversion).
+Position the controller at the object and press grip (see coordinates skill for world-to-OpenXR conversion — for placement, convert via the `OVRCameraRig/TrackingSpace` origin, not `CenterEyeAnchor`, or the grab misses once the head has moved off recenter).
 
 ## Step 2: Calibrate Offsets (once per grab)
 
@@ -40,12 +30,12 @@ get_world_pose("Controller/Anchor")    → anchor_pos
 get_world_pose("Object/RefPoint")      → ref_pos, rotation (rx, ry, rz)
 ```
 
-**Rotation offset** — the reference point's yaw at identity reveals the offset:
+**Rotation offset** — at identity, the reference point's forward IS the offset. From its Euler `(rx, ry, rz)`, the forward is Unity `R(rx,ry,rz)·(0,0,1)`; negate Z for OpenXR, then build the quat:
 ```
-forward_openxr = (sin(ry°), 0, -cos(ry°))     // for yaw-only offset
 Q_offset = math_build_quat(forward_openxr)
 Q_offset_inv = [-Q.x, -Q.y, -Q.z, Q.w]        // quaternion conjugate
 ```
+Handle any axis, not just yaw: a yaw-only offset reduces to `(sin ry, 0, -cos ry)`; a pure pitch `rx` gives `(0, sin rx, -cos rx)`; a pure roll leaves forward `(0,0,-1)` so `Q_offset ≈ identity`. (Measured: a controller grip is ~60° pitch; a hand grip is often a pure roll → ~identity.)
 
 **Position offset** — vector from anchor to reference point in Unity world space:
 ```
@@ -82,6 +72,10 @@ Keep held objects far enough from the camera so they don't fill the screen. In `
    openxr_capture_composited_image()           // visual check
    get_world_pose("TargetObject")              // "not found" = hit
    ```
+
+## Hands (same method)
+
+Aiming a **hand-held** object is identical — calibrate with the wrist at identity, then drive the aim with `openxr_set_hand_pose(wrist_orientation: Q_aim)` (the grabbed object follows the wrist) and fire with `openxr_hand_gesture(pinch)` instead of `set_controller_pose` / `Trigger`. Requery the reference point after each rotation and refine once, exactly as above. See **hz-meta-xr-operator-hand-tracking** for making the hand grab in the first place.
 
 ## Positioning the Reference Point
 

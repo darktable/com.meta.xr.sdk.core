@@ -81,7 +81,7 @@ namespace Meta.XR.Guides.Editor
                     Common.HasAppId());
         }
 
-        [MenuItem("Meta/Guides/Meta Account Setup Guide")]
+        [MenuItem("Window/Meta/Guides/Meta Account Setup Guide", false, 3300)]
         private static void SetupGuide()
         {
             new MetaAccountSetupGuide().ShowWindow(Origins.Menu, true);

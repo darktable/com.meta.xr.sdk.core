@@ -992,8 +992,8 @@ namespace Meta.XR
     }
 #endregion
 
-#region XR_EXTX1_haptic_parametric
-    public enum XrHapticParametricStreamFrameTypeEXTX1
+#region XR_EXT_haptic_parametric
+    public enum XrHapticParametricStreamFrameTypeEXT
     {
         None = 0,
         FirstFrame = 1,
@@ -1001,13 +1001,13 @@ namespace Meta.XR
         LastFrame = 3,
     }
 
-    public partial struct XrHapticParametricPointEXTX1
+    public partial struct XrHapticParametricPointEXT
     {
         public XrDuration Time;
         public float Value;
     }
 
-    public partial struct XrHapticParametricPropertiesEXTX1
+    public partial struct XrHapticParametricPropertiesEXT
     {
         public const XrStructureType StructureType = (XrStructureType)1000775001;
         public XrStructureType Type;
@@ -1018,30 +1018,30 @@ namespace Meta.XR
         public float MaxFrequencyHz;
     }
 
-    public partial struct XrHapticParametricTransientEXTX1
+    public partial struct XrHapticParametricTransientEXT
     {
         public XrDuration Time;
         public float Amplitude;
         public float Frequency;
     }
 
-    public partial struct XrHapticParametricVibrationEXTX1
+    public partial struct XrHapticParametricVibrationEXT
     {
         public const XrStructureType StructureType = (XrStructureType)1000775000;
         public XrStructureType Type;
         public unsafe void* Next;
         public uint AmplitudePointCount;
-        public unsafe XrHapticParametricPointEXTX1* AmplitudePoints;
+        public unsafe XrHapticParametricPointEXT* AmplitudePoints;
         public uint FrequencyPointCount;
-        public unsafe XrHapticParametricPointEXTX1* FrequencyPoints;
+        public unsafe XrHapticParametricPointEXT* FrequencyPoints;
         public uint TransientCount;
-        public unsafe XrHapticParametricTransientEXTX1* Transients;
+        public unsafe XrHapticParametricTransientEXT* Transients;
         public float MinFrequencyHz;
         public float MaxFrequencyHz;
-        public XrHapticParametricStreamFrameTypeEXTX1 StreamFrameType;
+        public XrHapticParametricStreamFrameTypeEXT StreamFrameType;
     }
 
-    public partial struct XrSystemHapticParametricPropertiesEXTX1
+    public partial struct XrSystemHapticParametricPropertiesEXT
     {
         public const XrStructureType StructureType = (XrStructureType)1000775002;
         public XrStructureType Type;
@@ -1051,10 +1051,10 @@ namespace Meta.XR
 
     partial class OpenXRNativeFuncs
     {
-        public delegate XrResult xrHapticParametricGetPropertiesEXTX1(
+        public delegate XrResult xrHapticParametricGetPropertiesEXT(
             XrSession session,
             in XrHapticActionInfo hapticActionInfo,
-            ref XrHapticParametricPropertiesEXTX1 parametricProperties);
+            ref XrHapticParametricPropertiesEXT parametricProperties);
     }
 #endregion
 

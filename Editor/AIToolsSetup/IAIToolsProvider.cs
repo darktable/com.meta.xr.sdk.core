@@ -72,6 +72,23 @@ namespace Meta.XR.Editor
         public string InstallingText;
         public Func<bool> IsInstalled;
         public Func<CancellationToken, Task<(bool success, string error)>> InstallAsync;
+
+        /// <summary>Button label for updating an already-installed prerequisite (stale copy detected).</summary>
+        public string UpdateButtonText;
+
+        /// <summary>
+        /// Optional: returns true when the prerequisite is installed but differs from the bundled SDK copy
+        /// and should be updated. Null (or false) means the install is treated as up to date once present.
+        /// </summary>
+        public Func<bool> NeedsUpdate;
+
+        /// <summary>
+        /// When set, the Incomplete state renders a CTA that simply opens this URL instead of
+        /// invoking <see cref="InstallAsync"/> — for prerequisites the panel cannot install itself
+        /// (e.g. the Meta VR CLI, which must be obtained from its public prerequisites page).
+        /// The step stays Incomplete and no install telemetry is emitted.
+        /// </summary>
+        public string CtaUrl;
     }
 
     internal struct RegistrationInfo

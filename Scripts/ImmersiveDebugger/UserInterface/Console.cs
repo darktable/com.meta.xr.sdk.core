@@ -254,6 +254,36 @@ namespace Meta.XR.ImmersiveDebugger.UserInterface
 
             if (_allLogData.Count >= MaximumNumberOfLogEntries)
             {
+                // Check if the new log is the same as the oldest log being removed.
+                // If so, we can optimize by not decrementing/incrementing counts,
+                // just moving the entry to the end. This also fixes T241667980 where
+                // the count could become desynchronized due to UI refresh timing.
+                var oldestLogData = _allLogData[0];
+                var oldestHash = ComputeLogHash(oldestLogData.logString, oldestLogData.stackTrace);
+                var newHash = ComputeLogHash(logString, stackTrace);
+
+                if (LogCollapseMode && oldestHash == newHash)
+                {
+                    // Same log type - just move to end without changing counts
+                    _allLogData.RemoveAt(0);
+                    _allLogData.Add((logString, stackTrace, type));
+
+                    if (_collapsedLogs.TryGetValue(newHash, out var existingEntry))
+                    {
+                        // Move entry to end of list
+                        if (existingEntry.Line != null)
+                        {
+                            _proxyFlex.RemoveProxy(existingEntry.Line);
+                            existingEntry.Line = null;
+                        }
+                        _entries.Remove(existingEntry);
+                        _entries.Add(existingEntry);
+                        AppendToProxyFlex(existingEntry);
+                    }
+                    Dirty = true;
+                    return;
+                }
+
                 RemoveOldestLogEntry();
             }
 

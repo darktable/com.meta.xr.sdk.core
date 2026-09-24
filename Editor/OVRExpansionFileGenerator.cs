@@ -35,7 +35,7 @@ public class BuildAssetBundles : MonoBehaviour
     /// <summary>
     /// Builds asset bundles for Android and renames the output to the standard OBB expansion file format.
     /// </summary>
-    [MenuItem("Meta/Tools/Build Mobile-Quest Expansion File", false, 100000)]
+    [MenuItem("Window/Meta/Tools/Build Mobile-Quest Expansion File", false, 100000)]
     public static void BuildBundles()
     {
         // Create expansion file directory and call build asset bundles

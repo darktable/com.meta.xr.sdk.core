@@ -45,5 +45,6 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Meta.XR.ImmersiveDebugger.DevAgent.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.MetaXROperator")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.AIToolsSetup")]
+[assembly: InternalsVisibleTo("Meta.XR.HandReadinessTool.Editor")]
 
 

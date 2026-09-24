@@ -31,7 +31,7 @@ Shader "EnvironmentDepth/OcclusionLit"
 
     SubShader
     {
-        PackageRequirements {"com.unity.render-pipelines.universal"}
+        PackageRequirements {"com.unity.render-pipelines.universal" : "14.0.0"}
         Pass
         {
             Tags { "LightMode" = "UniversalForward"}

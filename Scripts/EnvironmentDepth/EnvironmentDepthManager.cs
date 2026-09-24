@@ -108,6 +108,7 @@ namespace Meta.XR.EnvironmentDepth
         [SerializeField] private OcclusionShadersMode _occlusionShadersMode = OcclusionShadersMode.SoftOcclusion;
         [SerializeField, Tooltip("If set to true, hands will be removed from the depth texture.")]
         private bool _removeHands;
+
         /// <summary>
         /// This transform allows you to override the default tracking space.
         /// </summary>
@@ -227,6 +228,7 @@ namespace Meta.XR.EnvironmentDepth
             }
         }
 
+
         private readonly Matrix4x4[] _reprojectionMatrices = new Matrix4x4[numViews];
 
         private void Awake()
@@ -237,7 +239,7 @@ namespace Meta.XR.EnvironmentDepth
             {
 #if UNITY_EDITOR
                 if((!Application.isBatchMode) &&
-                    (OVRPlugin.initialized)) // We're in Link or XRSim                
+                    (OVRPlugin.initialized)) // We're in Link or XRSim
                     {
                         Debug.LogError("Environment Depth could not be retrieved! Please ensure the following:" +
                                        "\n\n" +
@@ -248,7 +250,7 @@ namespace Meta.XR.EnvironmentDepth
                                        " (Meta > Tools > Project Setup Tool)" +
                                        "\n\n" +
                                        "You are using a Quest 3 or newer device.");
-                    }                
+                    }
 #endif
                 return;
             }
@@ -513,6 +515,7 @@ namespace Meta.XR.EnvironmentDepth
 
         [Conditional("UNITY_ASSERTIONS")]
         private static void Log(LogType type, string msg) => Debug.unityLogger.Log(type, msg);
+
     }
 
     internal interface IDepthProvider

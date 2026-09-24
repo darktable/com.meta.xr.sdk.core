@@ -12,8 +12,6 @@
         "Meta.XR.Editor.ToolingSupport",
         "meta.xr.ai.agentbridge",
         "meta.xr.ai.agentbridge.editor",
-        "meta.xr.ai.mcpbridge",
-        "meta.xr.ai.mcpbridge.editor",
         "Oculus.VR",
         "Oculus.VR.Editor",
         "Meta.XR.Editor.Callbacks",

@@ -77,7 +77,7 @@ public class OVRManifestPreprocessor : EditorWindow
     /// <summary>
     /// Opens the Android Manifest Tool editor window.
     /// </summary>
-    [MenuItem("Meta/Tools/Android Manifest Tool", false, 100000)]
+    [MenuItem("Window/Meta/Tools/Android Manifest Tool", false, 100000)]
     public static void OpenAndroidManifestToolWindow()
     {
         GetWindow(typeof(OVRManifestPreprocessor));
@@ -1161,6 +1161,15 @@ public class OVRManifestPreprocessor : EditorWindow
                     targetDeviceValue = "quest3s";
                 else
                     targetDeviceValue += "|quest3s";
+            }
+            if (OVRDeviceSelector.isTargetDeviceVRGlasses)
+            {
+                // "stanley" is the compatibility key the OS matches on, defined in
+                // VrRuntimeCompatHelper.cpp. It is not the retail name and must not be renamed.
+                if (string.IsNullOrEmpty(targetDeviceValue))
+                    targetDeviceValue = "stanley";
+                else
+                    targetDeviceValue += "|stanley";
             }
             if (string.IsNullOrEmpty(targetDeviceValue))
             {

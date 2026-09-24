@@ -24,10 +24,13 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Meta.XR.BuildingBlocks.Editor")]
 [assembly: InternalsVisibleTo("Oculus.VR.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.About")]
+[assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.Welcome")]
+[assembly: InternalsVisibleTo("Meta.XR.Guides.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.UserInterface")]
 [assembly: InternalsVisibleTo("Meta.XR.MetaWand.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.BuildingBlocks.AIBlocks")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.ToolingSupport")]
+[assembly: InternalsVisibleTo("Meta.XR.Editor.StatusMenu")]
 [assembly: InternalsVisibleTo("Meta.XR.ImmersiveDebugger.DevAgent.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.HandReadinessTool.Editor")]
 

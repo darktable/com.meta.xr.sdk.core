@@ -26,8 +26,8 @@ using UnityEngine;
 namespace Meta.HandReadinessTool.Editor
 {
     /// <summary>
-    /// Registers hand-readiness compatibility checks using the existing OVRProjectSetup task system.
-    /// These tasks will appear in both the Project Setup Tool and the Hand Readiness Tool.
+    /// Registers hand-readiness checks with OVRProjectSetup. They surface only in the Hand Readiness
+    /// Tool window and are hidden from the generic Project Setup Tool.
     /// </summary>
     [InitializeOnLoad]
     internal static class HandReadinessSetupTasks
@@ -47,12 +47,8 @@ namespace Meta.HandReadinessTool.Editor
         /// </summary>
         private const string MinInteractionSDKVersion = "205.0.0";
 
-        // Per-project, per-user opt-in flag stored in Library/EditorUserSettings.asset
-        // (not version-controlled). Flipped to "true" when the user runs their first
-        // scan via HandReadinessToolWindow.RunScan(). When true, the hand-tracking
-        // task escalates to Required severity for this project; otherwise it stays
-        // Recommended so it doesn't render as a red error for controller-only
-        // projects that never engaged with the tool.
+        // Set on the first Hand Readiness Tool scan; escalates the hand-tracking task from Recommended
+        // to Required within that tool.
         private const string OptInConfigKey = "HandReadiness.UserOptedIn";
 
         internal static void MarkUserOptedIn()
@@ -91,8 +87,8 @@ namespace Meta.HandReadinessTool.Editor
                         AssetDatabase.SaveAssets();
                     }
                 },
-                message: $"Hand Tracking must be enabled. {HandReadinessConstants.DeviceName} requires hand tracking support " +
-                         "for the best user experience. Enable 'Controllers and Hands' or 'Hands Only' in Project Settings.",
+                message: "Hand tracking is not enabled. Set Hand Tracking Support to 'Controllers and Hands' " +
+                         "or 'Hands Only' in Project Settings to use hand tracking.",
                 fixMessage: "Enable hand tracking (Controllers and Hands)"
             );
 
@@ -116,12 +112,14 @@ namespace Meta.HandReadinessTool.Editor
                     UnityEditor.PackageManager.UI.Window.Open(InteractionSDKPackageName);
                 },
                 fixAutomatic: false, // Can't auto-update packages, just open Package Manager
-                message: $"Interaction SDK version {MinInteractionSDKVersion} or higher is required. " +
-                         $"{HandReadinessConstants.DeviceName} requires the latest Meta Interaction SDK ({InteractionSDKPackageName}) for full " +
-                         $"compatibility with {HandReadinessConstants.DeviceName} input and interaction features.",
+                message: $"Interaction SDK {MinInteractionSDKVersion} or higher is recommended. " +
+                         $"Update Meta Interaction SDK ({InteractionSDKPackageName}) for full compatibility with the " +
+                         "latest hand tracking input and interaction features.",
                 fixMessage: "Open Package Manager to update Interaction SDK"
             );
 #endif
+
+            OVRProjectSetup.SetGroupHiddenFromProjectSetupTool(HandReadinessTaskGroup, true);
         }
 
         /// <summary>

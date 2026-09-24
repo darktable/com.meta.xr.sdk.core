@@ -100,9 +100,9 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             Get = () => RuntimeSettings.Instance != null ? RuntimeSettings.Instance.ServerAddress : NetworkUtilities.GetLocalNetworkAddress(),
             Set = val => { if (RuntimeSettings.Instance != null) RuntimeSettings.Instance.ServerAddress = val; },
             Label = "Server Address",
-            Tooltip = "IP address of the Unity Editor running AgentBridge. " +
+            Tooltip = "Fallback IP address of the Unity Editor running AgentBridge. " +
                 "Auto-detected from this machine's local network. " +
-                "At build time, the current IP is automatically injected into the build.",
+                "Runtime clients try ADB reverse first, then this address.",
             SendTelemetry = true
         };
 
@@ -126,17 +126,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             Label = "Access Token",
             Tooltip = "The access token for authenticating with the Remote Agent Server.",
             SendTelemetry = false
-        };
-
-        private static readonly Setting McpServerPort = new CustomInt
-        {
-            Uid = nameof(McpServerPort),
-            Owner = ImmersiveDebugger.Editor.Utils.ToolDescriptor,
-            Get = () => RuntimeSettings.Instance != null ? RuntimeSettings.Instance.McpServerPort : 8090,
-            Set = val => { if (RuntimeSettings.Instance != null) RuntimeSettings.Instance.McpServerPort = val; },
-            Label = "MCP Bridge Port",
-            Tooltip = "Port number for the MCP Bridge HTTP server. This should match the port configured in MCPBridge settings.",
-            SendTelemetry = true
         };
 
         private static readonly Setting PushToTalkButton = new CustomFlags<OVRInput.Button>
@@ -181,6 +170,18 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             Set = val => { if (RuntimeSettings.Instance != null) RuntimeSettings.Instance.ReleaseDelay = val; },
             Label = "Release Delay",
             Tooltip = "Delay in seconds before releasing push-to-talk.",
+            SendTelemetry = true
+        };
+
+        private static readonly Setting UseVoiceSdk = new CustomBool
+        {
+            Uid = nameof(UseVoiceSdk),
+            Owner = ImmersiveDebugger.Editor.Utils.ToolDescriptor,
+            Get = () => RuntimeSettings.Instance != null && RuntimeSettings.Instance.UseVoiceSdkForInput,
+            Set = val => { if (RuntimeSettings.Instance != null) RuntimeSettings.Instance.UseVoiceSdkForInput = val; },
+            Label = "Use Voice SDK for input",
+            Tooltip = "Use the Meta Voice SDK (Wit.ai) instead of on-device System speech recognition. " +
+                "Off by default. Requires the com.meta.xr.sdk.voice package.",
             SendTelemetry = true
         };
 
@@ -261,13 +262,20 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
                     EditorGUILayout.EndHorizontal();
 
                     EditorGUILayout.HelpBox(
-                        "This address is auto-detected from your local network and injected into builds automatically. " +
-                        "Quest headsets will use it to connect back to this editor over the local network.\n\n" +
-                        "If you are running in XR Simulator or Play Mode locally, use 127.0.0.1 instead.",
+                        "Quest builds try ADB reverse on 127.0.0.1 first. When the Remote Agent Server starts, " +
+                        "the SDK configures adb reverse automatically when an authorized device is connected over USB. " +
+                        "If that is unavailable, the build falls back to this auto-detected local network address.\n\n" +
+                        "If you are running in XR Simulator or Play Mode locally, 127.0.0.1 is used by the same first attempt.",
                         MessageType.Info);
 
+                    if (GUILayout.Button(new GUIContent("Configure ADB reverse",
+                        "Run adb reverse for the Remote Agent Server port on connected authorized devices, so an " +
+                        "on-device build reaches this editor at 127.0.0.1. This also runs automatically when the server starts.")))
+                    {
+                        RemoteAgentServer.TryConfigureAdbReverse(RemoteAgentSettings.Port.Value);
+                    }
+
                     ServerPort.Draw(origin);
-                    McpServerPort.Draw(origin);
 
                     EditorGUILayout.Space();
                     EditorGUILayout.LabelField("Authentication", EditorStyles.boldLabel);
@@ -293,28 +301,38 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             {
                 using (new IndentScope(EditorGUI.indentLevel + 1))
                 {
-#if HAS_META_VOICE_SDK
-                    // Wit.ai Configuration
-                    DrawWitConfigurationField();
+                    EditorGUILayout.LabelField(
+                        "Voice input uses on-device System speech recognition by default (Quest 3/3S). " +
+                        "You can also tap the keyboard button in the panel to type.",
+                        EditorStyles.wordWrappedMiniLabel);
 
+                    // Push-to-talk settings apply to whichever voice backend is active.
                     PushToTalkButton.Draw(origin);
                     HandPushToTalkGesture.Draw(origin);
                     EnableDelayedRelease.Draw(origin);
                     ReleaseDelay.Draw(origin);
+
+                    EditorGUILayout.Space(4);
+#if HAS_META_VOICE_SDK
+                    // Opt in to the Voice SDK (Wit.ai) backend; its settings stay disabled until then.
+                    UseVoiceSdk.Draw(origin);
+                    using (new EditorGUI.DisabledScope(
+                        RuntimeSettings.Instance == null || !RuntimeSettings.Instance.UseVoiceSdkForInput))
+                    {
+                        DrawWitConfigurationField();
+                    }
 #else
-                    EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+                    // Voice SDK isn't installed — show the option disabled so its role is clear.
+                    using (new EditorGUI.DisabledScope(true))
+                    {
+                        EditorGUILayout.Toggle(
+                            "Use Voice SDK for input",
+                            RuntimeSettings.Instance != null && RuntimeSettings.Instance.UseVoiceSdkForInput);
+                    }
                     EditorGUILayout.LabelField(
-                        "Voice SDK (com.meta.xr.sdk.voice) is not installed. " +
-                        "Voice input is disabled. Install the Voice SDK to use the AI Assistant.",
+                        "Install the Meta XR Voice SDK (com.meta.xr.sdk.voice) to enable the Voice SDK " +
+                        "backend on Quest 2 / Quest Pro. System speech is used by default on Quest 3/3S.",
                         EditorStyles.wordWrappedMiniLabel);
-                    EditorGUILayout.Space(2);
-                    EditorGUILayout.LabelField(
-                        "To enable voice input:\n" +
-                        "1. Open Window > Package Manager\n" +
-                        "2. Add the Meta XR Voice SDK package\n" +
-                        "3. Reimport to activate push-to-talk and dictation",
-                        EditorStyles.wordWrappedMiniLabel);
-                    EditorGUILayout.EndVertical();
 #endif
                 }
             }
@@ -401,14 +419,8 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
                 statusIcon = Contents.ErrorIcon;
                 statusColor = Colors.WarningColor;
                 statusTitle = "Invalid Connection Settings";
-                var address = RuntimeSettings.Instance.ServerAddress;
                 var port = RuntimeSettings.Instance.ServerPort;
-                if (string.IsNullOrWhiteSpace(address) && port <= 0)
-                    statusMessage = "Server Address is blank and Server Port is 0. Configure both for Quest connectivity.";
-                else if (string.IsNullOrWhiteSpace(address))
-                    statusMessage = "Server Address is blank. Set the IP address of this machine for Quest connectivity.";
-                else
-                    statusMessage = $"Server Port is {port}. Set a valid port number (e.g. 48735) for Quest connectivity.";
+                statusMessage = $"Server Port is {port}. Set a valid port number (e.g. 48735) for AgentBridge connectivity.";
             }
             else if (validationService != null)
             {
@@ -501,6 +513,11 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             }
 
             EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.HelpBox(
+                "The in-headset AI Assistant's debugging tools are provided by Meta XR Operator. " +
+                "Open AI Tools Setup to install and activate it, and to configure ADB reverse for your headset.",
+                MessageType.Info);
         }
 
         /// <summary>

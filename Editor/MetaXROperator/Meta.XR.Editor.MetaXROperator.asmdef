@@ -5,7 +5,6 @@
         "Oculus.VR",
         "Oculus.VR.Editor",
         "meta.xr.ai.agentbridge.editor",
-        "meta.xr.ai.mcpbridge.editor",
         "meta.xr.json",
         "Meta.XR.Editor.Id",
         "Meta.XR.Editor.ToolingSupport",
@@ -13,6 +12,8 @@
         "Meta.XR.Editor.Settings",
         "Meta.XR.Editor.Callbacks",
         "Meta.XR.Editor.AIToolsSetup",
+        "Meta.XR.Guides.Editor",
+        "Meta.XR.Editor.Guide.Welcome",
         "Unity.XR.OpenXR",
         "Unity.XR.OpenXR.Editor",
         "Unity.XR.OpenXR.Features.MetaQuestSupport"

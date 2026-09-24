@@ -49,25 +49,29 @@
 
 /* ---------- Description textarea (ProjectDescriptionScreen) ---------- */
 
-/* Fixed-height scroll box wrapping the multiline description field: the box is
- * a transparent clip container at a fixed 196px. The field inside carries the
- * surface + radius and fills the box (so the box surface never shows as a frame
- * around an inset field), while long descriptions scroll within it via the
- * ScrollView's scrollbar + mouse wheel rather than growing the whole section. */
+/* Fixed-height (196px) scroll box wrapping the multiline description field. The box
+ * carries the surface + radius; the field and its input are transparent so a short,
+ * content-sized field never leaves a strip of box background showing. Long
+ * descriptions scroll within the box rather than growing the whole section. */
 .hrt-description-textarea-box {
     height: 196px;
     flex-shrink: 0;
-}
-
-.hrt-description-textarea {
-    flex-grow: 1;
     background-color: var(--rlds-surface-secondary-background);
     border-radius: var(--rlds-radius-xs);
 }
 
-.hrt-description-textarea > .unity-text-field__input {
-    flex-grow: 1;
+.hrt-description-textarea {
     flex-shrink: 0;
+    background-color: transparent;
+}
+
+/* Do NOT use flex-grow here: it caps the input to the viewport and clips long content
+ * with no way to scroll to the hidden part. The input instead sizes to its content
+ * (min-height fills the box when short, grows past it when long) so the wrapping
+ * ScrollView can scroll through all of it. */
+.hrt-description-textarea > .unity-text-field__input {
+    flex-shrink: 0;
+    min-height: 188px;
     border-width: 0;
     background-color: transparent;
     white-space: normal;
@@ -350,6 +354,20 @@
     cursor: link;
 }
 
+/* Documentation "Read more" affordance (CheckTypeScreen) — the label color and
+ * its trailing external-link icon tint both reference the theme-aware
+ * --rlds-text-link token instead of a hardcoded RGB. This sheet loads after the
+ * RLDS sheet, so this same-specificity class overrides the typography color. */
+.hrt-doc-link {
+    color: var(--rlds-text-link);
+    cursor: link;
+}
+
+.hrt-doc-link__icon {
+    -unity-background-image-tint-color: var(--rlds-text-link);
+    cursor: link;
+}
+
 /* Vertical variant of the RLDS divider: 1px wide, 20px tall, matched to the
  * theme-aware divider background. Used in the IssueDetailsPopup header to
  * separate the priority BadgeTag from the type BadgePill. */
@@ -423,4 +441,131 @@
 
 .hrt-option-card--selected .hrt-option-card__description {
     color: var(--rlds-text-ui-selected);
+}
+
+/* ---------- AI-check disclosures (CheckTypeScreen) ---------- */
+
+.hrt-ai-info {
+    margin-top: var(--rlds-spacing-sm);
+}
+
+.hrt-ai-info__intro {
+    color: var(--rlds-text-secondary);
+    white-space: normal;
+    margin-bottom: var(--rlds-spacing-xs);
+}
+
+.hrt-ai-step {
+    flex-direction: row;
+    align-items: flex-start;
+    margin-bottom: var(--rlds-spacing-sm);
+}
+
+.hrt-ai-step__number {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    border-radius: var(--rlds-radius-full);
+    background-color: var(--rlds-button-secondary-background-hover);
+    align-items: center;
+    justify-content: center;
+    margin-right: var(--rlds-spacing-xs);
+    margin-top: var(--rlds-spacing-4xs);
+    flex-shrink: 0;
+}
+
+.hrt-ai-step__number-label {
+    color: var(--rlds-text-secondary);
+    -unity-text-align: middle-center;
+}
+
+.hrt-ai-step__body {
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+.hrt-ai-step__title {
+    color: var(--rlds-text-primary);
+    margin-bottom: var(--rlds-spacing-4xs);
+    white-space: normal;
+}
+
+.hrt-ai-step__desc {
+    color: var(--rlds-text-secondary);
+    white-space: normal;
+}
+
+.hrt-or-divider {
+    flex-direction: row;
+    align-items: center;
+    margin-top: var(--rlds-spacing-sm);
+    margin-bottom: var(--rlds-spacing-sm);
+}
+
+.hrt-or-divider__line {
+    flex-grow: 1;
+    height: 1px;
+    background-color: var(--rlds-divider-secondary);
+}
+
+.hrt-or-divider__label {
+    color: var(--rlds-text-secondary);
+    margin-left: var(--rlds-spacing-sm);
+    margin-right: var(--rlds-spacing-sm);
+}
+
+/* ---------- Resume banner (ResultsScreen, AI path) ---------- */
+
+.hrt-resume-banner {
+    border-top-width: 1px;
+    border-top-color: var(--rlds-border-card);
+    background-color: var(--rlds-button-secondary-background-default);
+    padding-top: var(--rlds-spacing-xs);
+    padding-bottom: var(--rlds-spacing-xs);
+    padding-left: var(--rlds-spacing-4xl);
+    padding-right: var(--rlds-spacing-4xl);
+}
+
+.hrt-resume-banner__row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.hrt-resume-banner__description {
+    flex-shrink: 1;
+    margin-right: var(--rlds-spacing-md);
+    color: var(--rlds-text-placeholder);
+    white-space: normal;
+}
+
+.hrt-resume-copy {
+    flex-shrink: 1;
+    max-width: 60%;
+    overflow: hidden;
+    background-color: var(--rlds-surface-secondary-background);
+    border-width: 1px;
+    border-color: var(--rlds-border-card);
+    border-radius: var(--rlds-radius-xs);
+}
+
+.hrt-resume-copy:hover {
+    background-color: var(--rlds-surface-secondary-background);
+    border-color: var(--rlds-border-color);
+}
+
+.hrt-resume-copy--copied .rlds-button-icon--left {
+    -unity-background-image-tint-color: var(--rlds-icon-positive);
+}
+
+/* Match the icon to the 12px command text (RLDS default is 16px). */
+.hrt-resume-copy .rlds-button-icon--left {
+    width: var(--rlds-icon-size-xs);
+    height: var(--rlds-icon-size-xs);
+}
+
+/* Normal weight + secondary color so the command reads as a value, not a heading. */
+.hrt-resume-copy .rlds-body-small-code {
+    -unity-font-style: normal;
+    color: var(--rlds-text-secondary);
 }

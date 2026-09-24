@@ -32,10 +32,16 @@ public class TargetSpawner : MonoBehaviour
     private List<GameObject> activeTargets = new List<GameObject>();
     private Transform rigTransform;
 
-    private Shader neonBorderShader;
-    private Shader neonGridShader;
-    private Shader jazzCupShader;
-    private Shader vaporwaveGradientShader;
+    // Serialized so the scene holds a direct asset reference to each shader, which is what keeps
+    // them in a player build. Shader.Find on its own is not enough: nothing else in the project
+    // references these shaders, so the build pipeline strips them, Shader.Find returns null on
+    // device, and every cube silently falls back to URP/Lit. The Editor resolves Shader.Find
+    // against all project assets, so the break only ever shows up in a build.
+    [Header("Target Shaders")]
+    [SerializeField] private Shader neonBorderShader;
+    [SerializeField] private Shader neonGridShader;
+    [SerializeField] private Shader jazzCupShader;
+    [SerializeField] private Shader vaporwaveGradientShader;
 
     private int targetCounter;
 
@@ -60,10 +66,13 @@ public class TargetSpawner : MonoBehaviour
         if (rig != null)
             rigTransform = rig.transform;
 
-        neonBorderShader = Shader.Find("Custom/NeonBorder");
-        neonGridShader = Shader.Find("Custom/NeonGrid");
-        jazzCupShader = Shader.Find("Custom/JazzCup");
-        vaporwaveGradientShader = Shader.Find("Custom/VaporwaveGradient");
+        // Only for scenes authored before the fields above existed. In a build this resolves just
+        // as well as before — which is to say, not at all unless something else pulled the shader
+        // in — so an unwired scene degrades to URP/Lit rather than breaking outright.
+        if (neonBorderShader == null) neonBorderShader = Shader.Find("Custom/NeonBorder");
+        if (neonGridShader == null) neonGridShader = Shader.Find("Custom/NeonGrid");
+        if (jazzCupShader == null) jazzCupShader = Shader.Find("Custom/JazzCup");
+        if (vaporwaveGradientShader == null) vaporwaveGradientShader = Shader.Find("Custom/VaporwaveGradient");
 
         for (int i = 0; i < targetCount; i++)
             SpawnTarget();

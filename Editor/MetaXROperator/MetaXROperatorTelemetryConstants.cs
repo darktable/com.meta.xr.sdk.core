@@ -62,6 +62,7 @@ namespace Meta.XR.Editor
         {
             public const string Menu = "menu";
             public const string Pst = "pst";
+            public const string AiToolsSetup = "ai_tools_setup";
         }
 
         internal static class ActivationResult

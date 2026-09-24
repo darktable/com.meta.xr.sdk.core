@@ -79,6 +79,14 @@ namespace Meta.HandReadinessTool.Editor
 
             // Remote AI-path prompt.
             public const string PromptFetched = "hrt_prompt_fetched";
+
+            // AI check-type disclosures (CheckTypeScreen).
+            public const string AiHowItWorksExpanded = "hrt_ai_how_it_works_expanded";
+            public const string AiRunItYourselfExpanded = "hrt_ai_run_it_yourself_expanded";
+            public const string AiPromptCopied = "hrt_ai_prompt_copied";
+
+            // AI resume banner (ResultsScreen).
+            public const string AiSessionResumeCopied = "hrt_ai_session_resume_copied";
         }
 
         internal static class AnnotationType
@@ -279,6 +287,8 @@ namespace Meta.HandReadinessTool.Editor
             // File upload.
             public const string UnsupportedFormat = "unsupported_format";
             public const string ReadFailed = "read_failed";
+            public const string FileTooLarge = "file_too_large";
+            public const string FileEmpty = "file_empty";
         }
     }
 }

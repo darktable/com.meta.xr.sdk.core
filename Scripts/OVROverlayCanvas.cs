@@ -93,6 +93,10 @@ public class OVROverlayCanvas : OVRRayTransformer
 
     private RenderTexture _renderTexture;
 
+    private bool _threeDCurvedWarningShown;
+    private bool _threeDNoStereoWarningShown;
+    private bool _threeDForcedRenderInfoShown;
+
     private Material _imposterMaterial;
 
     private bool _optimalResolutionInitialized;
@@ -103,11 +107,14 @@ public class OVROverlayCanvas : OVRRayTransformer
     private int _lastPixelWidth;
     private int _lastPixelHeight;
 
-    private Vector2 _imposterTextureOffset;
-    private Vector2 _imposterTextureScale;
+    private Vector4 _imposterSTLeft = new Vector4(1, 1, 0, 0);
+    private Vector4 _imposterSTRight = new Vector4(1, 1, 0, 0);
 
     private bool _frameIsReady;
 
+    private static readonly int kMainTexShaderProperty = Shader.PropertyToID("_MainTex");
+    private static readonly int kMainTexSTLeftShaderProperty = Shader.PropertyToID("_MainTex_ST_Left");
+    private static readonly int kMainTexSTRightShaderProperty = Shader.PropertyToID("_MainTex_ST_Right");
     private static readonly int kAlphaWriteShaderProperty = Shader.PropertyToID("_AlphaWrite");
     private static readonly int kAlphaToMaskShaderProperty = Shader.PropertyToID("_AlphaToMask");
     private static readonly string kWithClipShaderKeyword = "WITH_CLIP";
@@ -252,6 +259,38 @@ public class OVROverlayCanvas : OVRRayTransformer
     [FormerlySerializedAs("overlayType")]
     public CompositionMode compositionMode = CompositionMode.PunchAHole;
 
+    /// <summary>
+    /// Renders this canvas stereoscopically with proper per-eye parallax for 3D children. Flat shape only.
+    /// </summary>
+    /// <remarks>
+    /// Uses an off-axis projection from each eye position; content at the canvas plane is pixel-identical
+    /// to the standard 2D path, content in front/behind shifts in screen space. The render texture is
+    /// allocated double-wide and submitted as a Mono compositor layer with per-eye srcRects. Requires
+    /// <see cref="shape"/> = <see cref="CanvasShape.Flat"/>; on Curved shapes 3D is silently disabled with
+    /// a one-shot warning. Forces per-frame rendering: <see cref="manualRedraw"/> and
+    /// <see cref="renderInterval"/> are ignored. Mipmap rendering is also disabled (mip 0 only per eye).
+    /// </remarks>
+    [Tooltip("Stereo render the canvas so 3D children get per-eye parallax. Flat shape only. Forces per-frame redraw.")]
+    public bool enable3D = false;
+
+    /// <summary>
+    /// Depth range (in meters) in front of and behind the canvas plane that children may occupy. In 3D mode
+    /// (<see cref="enable3D"/>) drives the off-axis frustum: near plane is placed at <c>dCanvas - depthRange</c>
+    /// (clamped to a minimum of 0.05m so the canvas itself is never clipped when the eye gets very close)
+    /// and far plane at <c>dCanvas + depthRange</c>. In 2D mode it sets the orthographic depth slab around
+    /// the canvas plane. Defaults to 0.5m, which comfortably covers extruded-button-style UI parallax.
+    /// Hidden from the inspector because the default is suitable for typical UI; settable programmatically.
+    /// </summary>
+    [HideInInspector]
+    public float depthRange = 0.5f;
+
+    /// <summary>
+    /// True when 3D stereo rendering is currently active. 3D mode is only valid for Flat panels.
+    /// When active, <see cref="_renderTexture"/> is allocated double-wide so that left and right eye
+    /// renders can be packed into the two halves; the compositor samples each half via per-eye srcRects.
+    /// </summary>
+    private bool Is3DActive => enable3D && shape == CanvasShape.Flat;
+
 
     [Obsolete("The field `expensive` is now deprecated. Use `superSample` instead")]
     public bool expensive
@@ -347,8 +386,7 @@ public class OVROverlayCanvas : OVRRayTransformer
         _camera.enabled = false;
         _camera.clearFlags = CameraClearFlags.SolidColor;
         _camera.backgroundColor = Color.clear;
-        _camera.nearClipPlane = 0.99f;
-        _camera.farClipPlane = 1.01f;
+        // nearClipPlane / farClipPlane bound the camera's depth slab around the canvas plane.
 
         GameObject imposter = new GameObject(name + " Imposter") { hideFlags = hideFlags };
 
@@ -383,6 +421,7 @@ public class OVROverlayCanvas : OVRRayTransformer
             evt.SetMetadata("mipmap_mode", _mipmapMode.ToString());
             evt.SetMetadata("dynamic_resolution", _dynamicResolution);
             evt.SetMetadata("redraw_resolution_threshold", _redrawResolutionThreshold);
+            evt.SetMetadata("enable_3d", enable3D);
             evt.Send();
         }
 #endif
@@ -420,14 +459,19 @@ public class OVROverlayCanvas : OVRRayTransformer
         float paddedWidth = rectWidth * (width / (float)innerWidth);
         float paddedHeight = rectHeight * (height / (float)innerHeight);
 
-        if (_renderTexture == null || _renderTexture.width != width || _renderTexture.height != height || (_renderTexture.mipmapCount == 1) != (_mipmapMode == MipMapMode.Disabled))
+        // In 3D mode the render texture is allocated double-wide so left and right eye renders can be
+        // packed into the two halves; the compositor and imposter shader sample each half via per-eye
+        // srcRects / per-eye _MainTex_ST. In 2D mode the texture is the standard width.
+        int textureWidth = Is3DActive ? width * 2 : width;
+
+        if (_renderTexture == null || _renderTexture.width != textureWidth || _renderTexture.height != height || (_renderTexture.mipmapCount == 1) != (_mipmapMode == MipMapMode.Disabled))
         {
             if (_renderTexture != null)
             {
                 DestroyImmediate(_renderTexture);
             }
 
-            RenderTextureDescriptor descriptor = new RenderTextureDescriptor(width, height,
+            RenderTextureDescriptor descriptor = new RenderTextureDescriptor(textureWidth, height,
                 GraphicsFormat.R8G8B8A8_SRGB, GraphicsFormat.D24_UNorm_S8_UInt);
             // if we can't scale the viewport, generate mipmaps instead
             descriptor.useMipMap = _mipmapMode != MipMapMode.Disabled;
@@ -437,11 +481,27 @@ public class OVROverlayCanvas : OVRRayTransformer
             _renderTexture.name = name;
         }
 
+        if (enable3D && shape == CanvasShape.Curved && !_threeDCurvedWarningShown)
+        {
+            Debug.LogWarning(
+                $"[OVROverlayCanvas][{name}] enable3D is only supported for Flat shape. Curved canvases will continue to render mono.",
+                this);
+            _threeDCurvedWarningShown = true;
+        }
+
         var rectScale = GetRectTransformScale();
         _camera.orthographicSize = 0.5f * paddedHeight * rectScale.y;
         _camera.aspect = (paddedWidth * rectScale.x) / (paddedHeight * rectScale.y);
         _camera.targetTexture = _renderTexture;
         _camera.cullingMask = 1 << CanvasRenderLayer;
+        // The camera sits 1m behind the canvas plane. depthRange sets the half-width of the slab around the
+        // canvas plane: it's the ortho slab in 2D mode and bounds Unity's frustum culling in 3D mode (the
+        // off-axis projection matrix overrides the rasterized depth range, but Unity's culling still uses
+        // these values). Safe to widen because SwapTransformLayers + cullingMask only render this canvas's
+        // own children.
+        float depthSlab = Mathf.Max(0.001f, depthRange);
+        _camera.nearClipPlane = Mathf.Max(0.05f, 1f - depthSlab);
+        _camera.farClipPlane = 1f + depthSlab;
 
         Shader shader = OVROverlayCanvasSettings.Instance.GetShader(opacity);
 
@@ -509,8 +569,13 @@ public class OVROverlayCanvas : OVRRayTransformer
         _imposterMaterial.mainTexture = _renderTexture;
         _imposterMaterial.color = CalcImposterColor();
         _imposterMaterial.SetInt(kAlphaWriteShaderProperty, CalcImposterAlphaWrite());
-        _imposterMaterial.mainTextureOffset = _imposterTextureOffset;
-        _imposterMaterial.mainTextureScale = _imposterTextureScale;
+        _imposterMaterial.SetVector(kMainTexSTLeftShaderProperty, _imposterSTLeft);
+        _imposterMaterial.SetVector(kMainTexSTRightShaderProperty, _imposterSTRight);
+        // Fallback for old shader versions that only read the legacy _MainTex_ST: use the left-eye ST so
+        // the imposter at least samples the correct half (mono left-eye fallback) instead of the full
+        // double-wide texture. New stereo-aware shaders ignore mainTextureScale/Offset.
+        _imposterMaterial.mainTextureScale = new Vector2(_imposterSTLeft.x, _imposterSTLeft.y);
+        _imposterMaterial.mainTextureOffset = new Vector2(_imposterSTLeft.z, _imposterSTLeft.w);
 
         _meshRenderer.sharedMaterial = _imposterMaterial;
         _meshRenderer.gameObject.layer = layer;
@@ -531,6 +596,7 @@ public class OVROverlayCanvas : OVRRayTransformer
         }
 
         _overlay.textures[0] = _renderTexture;
+        _overlay.textures[1] = null;
         _overlay.currentOverlayShape = shape == CanvasShape.Flat
             ? OVROverlay.OverlayShape.Quad
             : OVROverlay.OverlayShape.Cylinder;
@@ -547,7 +613,8 @@ public class OVROverlayCanvas : OVRRayTransformer
         if (ShouldRender())
         {
             _overlay.overrideTextureRectMatrix = true;
-            _overlay.SetSrcDestRects(src, src, dst, dst);
+            GetPerEyeSrcRects(src, out var srcLeft, out var srcRight);
+            _overlay.SetSrcDestRects(srcLeft, srcRight, dst, dst);
             ApplyViewportScale();
         }
 
@@ -609,6 +676,27 @@ public class OVROverlayCanvas : OVRRayTransformer
 
     protected virtual bool ShouldRender()
     {
+        if (Is3DActive)
+        {
+            // 3D mode renders every frame because head pose changes every frame; cached frames
+            // would break stereo parallax. manualRedraw / renderInterval are intentionally ignored.
+            if ((manualRedraw || renderInterval > 1) && !_threeDForcedRenderInfoShown)
+            {
+                Debug.Log(
+                    $"[OVROverlayCanvas][{name}] enable3D forces per-frame rendering; ignoring manualRedraw and renderInterval.",
+                    this);
+                _threeDForcedRenderInfoShown = true;
+            }
+
+            // Always render in the editor
+            if (Application.isEditor)
+            {
+                return true;
+            }
+
+            return IsInFrustum();
+        }
+
         if (manualRedraw && _frameIsReady)
         {
             // Check if the resolution has changed enough to trigger a redraw
@@ -713,9 +801,12 @@ public class OVROverlayCanvas : OVRRayTransformer
         // Update our impostor color to switch between visible and punch-a-hole
         _imposterMaterial.color = CalcImposterColor();
         _imposterMaterial.SetInt(kAlphaWriteShaderProperty, CalcImposterAlphaWrite());
-        // Update the scale and offset each frame to avoid a bug where Unity likes to reset them for some reason
-        _imposterMaterial.mainTextureScale = _imposterTextureScale;
-        _imposterMaterial.mainTextureOffset = _imposterTextureOffset;
+        // Update the per-eye scale and offset each frame to avoid a bug where Unity likes to reset them.
+        _imposterMaterial.SetVector(kMainTexSTLeftShaderProperty, _imposterSTLeft);
+        _imposterMaterial.SetVector(kMainTexSTRightShaderProperty, _imposterSTRight);
+        // Legacy _MainTex_ST fallback (left eye) for shader/script version mismatch.
+        _imposterMaterial.mainTextureScale = new Vector2(_imposterSTLeft.x, _imposterSTLeft.y);
+        _imposterMaterial.mainTextureOffset = new Vector2(_imposterSTLeft.z, _imposterSTLeft.w);
     }
 
     public float? GetViewPriorityScore()
@@ -831,6 +922,36 @@ public class OVROverlayCanvas : OVRRayTransformer
         }
     }
 
+    // Returns world-to-view matrix for a given stereo eye (eyeIndex 0=Left, 1=Right). On PC OpenXR the
+    // per-eye matrices live on XRDisplaySubsystem; Camera.GetStereoViewMatrix is only updated during
+    // camera rendering callbacks, not during Update(), and may return identity outside that window.
+    // Returns false when no stereo source is available (in which case the camera is mono).
+    private bool TryGetEyeViewMatrix(Camera mainCamera, int eyeIndex, out Matrix4x4 viewMatrix)
+    {
+#if USING_XR_SDK
+        XRDisplaySubsystem currentDisplaySubsystem = OVRManager.GetCurrentDisplaySubsystem();
+        if (currentDisplaySubsystem != null && currentDisplaySubsystem.GetRenderPassCount() > 0)
+        {
+            // Multi-pass: one RenderPass per eye, parameter index 0 within that pass.
+            // Single-pass / single-pass-instanced: one RenderPass, two parameters (left, right).
+            int passCount = currentDisplaySubsystem.GetRenderPassCount();
+            int passIndex = (passCount >= 2) ? eyeIndex : 0;
+            int paramIndex = (passCount >= 2) ? 0 : eyeIndex;
+            currentDisplaySubsystem.GetRenderPass(passIndex, out var renderPass);
+            renderPass.GetRenderParameter(mainCamera, paramIndex, out var renderParameter);
+            viewMatrix = renderParameter.view;
+            return true;
+        }
+#endif
+        if (mainCamera.stereoEnabled)
+        {
+            viewMatrix = mainCamera.GetStereoViewMatrix((Camera.StereoscopicEye)eyeIndex);
+            return true;
+        }
+        viewMatrix = mainCamera.worldToCameraMatrix;
+        return false;
+    }
+
     private (int pixelWidth, int pixelHeight)? CalculateScaledResolution()
     {
 #if UNITY_EDITOR
@@ -903,9 +1024,11 @@ public class OVROverlayCanvas : OVRRayTransformer
         int pixelHeight = ((height + 1) & ~1) + 4;
         int pixelWidth = ((width + 1) & ~1) + 4;
 
-        // clamp our viewport to the texture size
+        // clamp our viewport to the per-eye texture size (in 3D mode the actual texture is allocated
+        // double-wide; pixelWidth/pixelHeight refer to a single eye's render area).
+        int eyeTextureWidth = Is3DActive ? _renderTexture.width / 2 : _renderTexture.width;
         pixelHeight = Mathf.Clamp(pixelHeight, 32, _renderTexture.height);
-        pixelWidth = Mathf.Clamp(pixelWidth, 32, _renderTexture.width);
+        pixelWidth = Mathf.Clamp(pixelWidth, 32, eyeTextureWidth);
         return (pixelWidth, pixelHeight);
     }
 
@@ -939,24 +1062,64 @@ public class OVROverlayCanvas : OVRRayTransformer
         _camera.orthographicSize = (0.5f * orthoHeight);
         _camera.aspect = (orthoWidth / orthoHeight);
 
-        float sizeX = pixelWidth / (float)_renderTexture.width;
-        float sizeY = pixelHeight / (float)_renderTexture.height;
+        // Single-eye dims in normalized W x H coords. In 3D mode the actual _renderTexture is double-wide,
+        // but RenderEye3D always uses a temp RT + Graphics.CopyTexture into the appropriate half, so the
+        // _camera.rect (which is in _renderTexture-normalized coords) is irrelevant in 3D mode.
+        int eyeTextureWidth = Is3DActive ? _renderTexture.width / 2 : _renderTexture.width;
+        int eyeTextureHeight = _renderTexture.height;
+        float sizeX = pixelWidth / (float)eyeTextureWidth;
+        float sizeY = pixelHeight / (float)eyeTextureHeight;
 
-        float innerSizeX = innerPixelWidth / (float)_renderTexture.width;
-        float innerSizeY = innerPixelHeight / (float)_renderTexture.height;
+        float innerSizeX = innerPixelWidth / (float)eyeTextureWidth;
+        float innerSizeY = innerPixelHeight / (float)eyeTextureHeight;
 
-        // scale the camera rect
-        _camera.rect = new Rect(0.5f - 0.5f * sizeX, 0.5f - 0.5f * sizeY, sizeX, sizeY);
+        if (Is3DActive)
+        {
+            // RenderEye3D handles its own rect via temp RT; setting full-rect here keeps Unity happy.
+            _camera.rect = new Rect(0, 0, 1, 1);
+        }
+        else
+        {
+            // 2D path: scale the camera rect to a centered sub-rect of the persistent RT.
+            _camera.rect = new Rect(0.5f - 0.5f * sizeX, 0.5f - 0.5f * sizeY, sizeX, sizeY);
+        }
 
+        // src is the centered inner sampling rect in single-eye (W x H) normalized coords.
         Rect src = new Rect(0.5f - 0.5f * innerSizeX, 0.5f - 0.5f * innerSizeY, innerSizeX, innerSizeY);
         Rect dst = new Rect(0, 0, 1, 1);
 
         // update the overlay to use this same size
         _overlay.overrideTextureRectMatrix = true;
-        _overlay.SetSrcDestRects(src, src, dst, dst);
+        GetPerEyeSrcRects(src, out var srcLeft, out var srcRight);
+        _overlay.SetSrcDestRects(srcLeft, srcRight, dst, dst);
 
-        // Update our material offset and scale
-        RectToOffsetScale(src, out _imposterTextureOffset, out _imposterTextureScale);
+        // Update per-eye imposter material STs so the imposter shader samples the correct half of the
+        // (possibly double-wide) _renderTexture. In 2D mode both STs are identical (acts as mono).
+        _imposterSTLeft = RectToST(srcLeft);
+        _imposterSTRight = RectToST(srcRight);
+    }
+
+    // Splits a single-eye normalized src rect into per-eye srcs. In 3D mode (when _renderTexture is
+    // allocated double-wide), the left eye samples the [0, 0.5] horizontal half and the right eye samples
+    // the [0.5, 1] half. In 2D mode (mono) both per-eye srcs equal the input.
+    private void GetPerEyeSrcRects(in Rect singleEyeSrc, out Rect srcLeft, out Rect srcRight)
+    {
+        if (Is3DActive)
+        {
+            srcLeft = new Rect(0.5f * singleEyeSrc.x, singleEyeSrc.y, 0.5f * singleEyeSrc.width, singleEyeSrc.height);
+            srcRight = new Rect(0.5f + 0.5f * singleEyeSrc.x, singleEyeSrc.y, 0.5f * singleEyeSrc.width, singleEyeSrc.height);
+        }
+        else
+        {
+            srcLeft = singleEyeSrc;
+            srcRight = singleEyeSrc;
+        }
+    }
+
+    // Convert a normalized rect to Unity's _MainTex_ST vector layout: (scale.x, scale.y, offset.x, offset.y).
+    private static Vector4 RectToST(in Rect rect)
+    {
+        return new Vector4(rect.width, rect.height, rect.x, rect.y);
     }
 
     private void SwapTransformLayers(LayerMask from, LayerMask to)
@@ -973,75 +1136,25 @@ public class OVROverlayCanvas : OVRRayTransformer
 
     private void RenderCamera()
     {
-        _camera.transform.position = rectTransformWorldCenter - _camera.transform.forward;
-
         int originalLayer = gameObject.layer;
         GetComponentsInChildren(_CachedTransformList);
         SwapTransformLayers(gameObject.layer, CanvasRenderLayer);
 
         try
         {
-            // switch all targeted renderers to another layer, so we don't render things outside of this object
-            _camera.cullingMask = 1 << CanvasRenderLayer;
-
-            // Editor-only optional vertical flip (OVROverlayCanvasSettings.FlipOverlayCanvasYInEditor,
-            // default off): the Meta XR Simulator (Editor-only) can sample the layer render texture with
-            // the opposite vertical convention and show the canvas upside down. Applied per-render in
-            // RenderCameraOnce so the per-mip orthographic size/aspect adjustments below are preserved.
-            // Has no effect in player builds — the read and the flip are both compiled out.
-            bool flipY = false;
-#if UNITY_EDITOR
-            flipY = OVROverlayCanvasSettings.Instance.FlipOverlayCanvasYInEditor;
-#endif
-
-            var rect = _camera.rect;
-            float orthoSize = _camera.orthographicSize;
-            float orthoAspect = _camera.aspect;
-            int renderCount = _mipmapMode == MipMapMode.Rendered ? _renderTexture.mipmapCount : 1;
-            for (int mip = 0; mip < renderCount; mip++)
+            if (Is3DActive)
             {
-                int texWidth = Mathf.Max(1, _renderTexture.width >> mip);
-                int texHeight = Mathf.Max(1, _renderTexture.height >> mip);
-
-                const float kEpsilon = 0.001f;
-                int xOffset = Mathf.FloorToInt(rect.x * texWidth + kEpsilon);
-                int yOffset = Mathf.FloorToInt(rect.y * texHeight + kEpsilon);
-
-                int pixWidth = Mathf.CeilToInt(rect.xMax * texWidth - kEpsilon) - xOffset;
-                int pixHeight = Mathf.CeilToInt(rect.yMax * texHeight - kEpsilon) - yOffset;
-
-                // Adjust width/height of the camera's ortho rect to align to partial pixels
-                float adjWidth = pixWidth / (rect.width * texWidth);
-                float adjHeight = pixHeight / (rect.height * texHeight);
-
-                if (pixWidth < _renderTexture.width || pixHeight < _renderTexture.height)
-                {
-                    RenderTextureDescriptor descriptor = new RenderTextureDescriptor(pixWidth, pixHeight,
-                        GraphicsFormat.R8G8B8A8_SRGB, GraphicsFormat.D24_UNorm_S8_UInt, 0);
-                    var tempRT = RenderTexture.GetTemporary(descriptor);
-                    tempRT.Create();
-
-                    // override render texture with the temporary one
-                    _camera.targetTexture = tempRT;
-                    _camera.rect = new Rect(0, 0, 1, 1);
-                    _camera.orthographicSize = orthoSize * adjHeight;
-                    _camera.aspect = orthoAspect * (adjWidth / adjHeight);
-                    RenderCameraOnce(flipY);
-
-                    // Copy to our original render texture, then release the temporary texture
-                    Graphics.CopyTexture(tempRT, 0, 0, 0, 0, pixWidth, pixHeight, _renderTexture, 0, mip, xOffset, yOffset);
-                    RenderTexture.ReleaseTemporary(tempRT);
-
-                    // restore original target rect and texture
-                    _camera.rect = rect;
-                    _camera.targetTexture = _renderTexture;
-                    _camera.orthographicSize = orthoSize;
-                    _camera.aspect = orthoAspect;
-                }
-                else
-                {
-                    RenderCameraOnce(flipY);
-                }
+                RenderEye3D(0);
+                RenderEye3D(1);
+                // Restore camera state so any future 2D path renders correctly.
+                _camera.ResetProjectionMatrix();
+                _camera.ResetWorldToCameraMatrix();
+                _camera.orthographic = true;
+                _camera.targetTexture = _renderTexture;
+            }
+            else
+            {
+                RenderEye2D();
             }
         }
         finally
@@ -1051,33 +1164,219 @@ public class OVROverlayCanvas : OVRRayTransformer
         }
     }
 
-    // Renders the camera once into the current target. The Y-flip is Editor-only (compiled out of
-    // player builds): when flipY is set, the projection is read AFTER the per-mip orthographic
-    // size/aspect have been applied (so those adjustments are preserved), its Y axis is inverted,
-    // then reset afterwards so the camera returns to auto-projection mode for the next render.
-    // GL.invertCulling keeps face winding correct.
+    private void RenderEye2D()
+    {
+        _camera.transform.position = rectTransformWorldCenter - _camera.transform.forward;
+
+        // switch all targeted renderers to another layer, so we don't render things outside of this object
+        _camera.cullingMask = 1 << CanvasRenderLayer;
+
+        // Optional global vertical flip (OVROverlayCanvasSettings.FlipOverlayCanvasY, default off):
+        // some runtimes or compositors sample the layer render texture with the opposite vertical
+        // convention and show the canvas upside down. Applied per-render in RenderCameraOnce so the
+        // per-mip orthographic size/aspect adjustments below are preserved.
+        bool flipY = OVROverlayCanvasSettings.Instance.FlipOverlayCanvasY;
+
+        var rect = _camera.rect;
+        float orthoSize = _camera.orthographicSize;
+        float orthoAspect = _camera.aspect;
+        int renderCount = _mipmapMode == MipMapMode.Rendered ? _renderTexture.mipmapCount : 1;
+        for (int mip = 0; mip < renderCount; mip++)
+        {
+            int texWidth = Mathf.Max(1, _renderTexture.width >> mip);
+            int texHeight = Mathf.Max(1, _renderTexture.height >> mip);
+
+            const float kEpsilon = 0.001f;
+            int xOffset = Mathf.FloorToInt(rect.x * texWidth + kEpsilon);
+            int yOffset = Mathf.FloorToInt(rect.y * texHeight + kEpsilon);
+
+            int pixWidth = Mathf.CeilToInt(rect.xMax * texWidth - kEpsilon) - xOffset;
+            int pixHeight = Mathf.CeilToInt(rect.yMax * texHeight - kEpsilon) - yOffset;
+
+            // Adjust width/height of the camera's ortho rect to align to partial pixels
+            float adjWidth = pixWidth / (rect.width * texWidth);
+            float adjHeight = pixHeight / (rect.height * texHeight);
+
+            if (pixWidth < _renderTexture.width || pixHeight < _renderTexture.height)
+            {
+                RenderTextureDescriptor descriptor = new RenderTextureDescriptor(pixWidth, pixHeight,
+                    GraphicsFormat.R8G8B8A8_SRGB, GraphicsFormat.D24_UNorm_S8_UInt, 0);
+                var tempRT = RenderTexture.GetTemporary(descriptor);
+                tempRT.Create();
+
+                // override render texture with the temporary one
+                _camera.targetTexture = tempRT;
+                _camera.rect = new Rect(0, 0, 1, 1);
+                _camera.orthographicSize = orthoSize * adjHeight;
+                _camera.aspect = orthoAspect * (adjWidth / adjHeight);
+                RenderCameraOnce(flipY);
+
+                // Copy to our original render texture, then release the temporary texture
+                Graphics.CopyTexture(tempRT, 0, 0, 0, 0, pixWidth, pixHeight, _renderTexture, 0, mip, xOffset, yOffset);
+                RenderTexture.ReleaseTemporary(tempRT);
+
+                // restore original target rect and texture
+                _camera.rect = rect;
+                _camera.targetTexture = _renderTexture;
+                _camera.orthographicSize = orthoSize;
+                _camera.aspect = orthoAspect;
+            }
+            else
+            {
+                RenderCameraOnce(flipY);
+            }
+        }
+    }
+
+    // Renders the camera once into the current target. When flipY is set, the projection is read
+    // AFTER the per-mip orthographic size/aspect have been applied (so those adjustments are
+    // preserved), its Y axis is inverted, then reset afterwards so the camera returns to
+    // auto-projection mode for the next render. GL.invertCulling keeps face winding correct.
     private void RenderCameraOnce(bool flipY)
     {
-#if UNITY_EDITOR
-        if (flipY)
+        if (!flipY)
         {
-            var proj = _camera.projectionMatrix;
-            proj[1, 1] *= -1;
-            _camera.projectionMatrix = proj;
-            GL.invertCulling = true;
-            try
+            _camera.Render();
+            return;
+        }
+
+        var proj = _camera.projectionMatrix;
+        proj[1, 1] *= -1;
+        _camera.projectionMatrix = proj;
+        GL.invertCulling = true;
+        try
+        {
+            _camera.Render();
+        }
+        finally
+        {
+            _camera.ResetProjectionMatrix();
+            GL.invertCulling = false;
+        }
+    }
+
+    // Render the canvas from one eye position with an off-axis (oblique) projection so the camera's image
+    // plane aligns with the canvas plane. Content exactly on the canvas plane is pixel-identical to the 2D
+    // ortho render; content in front/behind shifts in screen space, producing stereo parallax.
+    private void RenderEye3D(int eyeIndex)
+    {
+        var mainCamera = OVRManager.FindMainCamera();
+        if (mainCamera == null || !TryGetEyeViewMatrix(mainCamera, eyeIndex, out var stereoView))
+        {
+            if (!_threeDNoStereoWarningShown)
             {
-                _camera.Render();
+                Debug.LogWarning(
+                    $"[OVROverlayCanvas][{name}] enable3D requires a stereo main camera. Falling back to 2D rendering.",
+                    this);
+                _threeDNoStereoWarningShown = true;
             }
-            finally
+            // Render once into the left-eye RT using the existing 2D path; right RT will be left as-is.
+            if (eyeIndex == 0)
             {
-                _camera.ResetProjectionMatrix();
-                GL.invertCulling = false;
+                RenderEye2D();
             }
             return;
         }
-#endif
+
+        // stereoView is world-to-view in OpenGL convention (camera looks down -Z).
+        // The eye world position is the inverse view matrix applied to the origin.
+        var viewToWorld = stereoView.inverse;
+        Vector3 eyeWorldPos = viewToWorld.MultiplyPoint(Vector3.zero);
+
+        // Build a worldToCameraMatrix whose orientation matches the canvas (so the image plane is parallel
+        // to the canvas plane). Unity's worldToCameraMatrix follows the OpenGL convention, so apply a Z-flip.
+        var canvasRotation = transform.rotation;
+        var cameraToWorld = Matrix4x4.TRS(eyeWorldPos, canvasRotation, Vector3.one);
+        var worldToCamera = Matrix4x4.Scale(new Vector3(1f, 1f, -1f)) * cameraToWorld.inverse;
+
+        // Project the canvas world-space corners into eye view space.
+        rectTransform.GetWorldCorners(_WorldCorners);
+        Vector3 vBL = worldToCamera.MultiplyPoint(_WorldCorners[0]);
+        Vector3 vTL = worldToCamera.MultiplyPoint(_WorldCorners[1]);
+        Vector3 vTR = worldToCamera.MultiplyPoint(_WorldCorners[2]);
+        Vector3 vBR = worldToCamera.MultiplyPoint(_WorldCorners[3]);
+
+        // In view space (Unity / OpenGL convention) an object in front of the camera has z < 0.
+        // The signed distance from eye to canvas plane is therefore -z.
+        float canvasViewZ = 0.25f * (vBL.z + vTL.z + vTR.z + vBR.z);
+        float dCanvas = -canvasViewZ;
+        if (dCanvas <= 0.0001f)
+        {
+            // Canvas is at or behind the eye - skip this eye to avoid a degenerate frustum.
+            return;
+        }
+
+        // Center a depth volume of width 2*depthRange around the canvas plane. Children outside this volume
+        // are clipped. The near plane is clamped to 0.05m so the canvas itself is not clipped when the eye
+        // gets very close to the panel (dCanvas < depthRange + 0.05m).
+        const float kMinNear = 0.05f;
+        float depthSlab = Mathf.Max(0.001f, depthRange);
+        float near = Mathf.Max(kMinNear, dCanvas - depthSlab);
+        float far = dCanvas + depthSlab;
+        if (near >= far)
+        {
+            // Degenerate frustum: the near-plane clamp pushed past the far plane (very close eye plus
+            // tiny depthRange). Skip this eye to avoid Matrix4x4.Frustum producing a singular matrix.
+            return;
+        }
+        float scale = near / dCanvas;
+        // (l, r, b, t) at the near plane such that the canvas content exactly fills NDC [-1, +1].
+        float l = Mathf.Min(vBL.x, vTL.x) * scale;
+        float r = Mathf.Max(vBR.x, vTR.x) * scale;
+        float b = Mathf.Min(vBL.y, vBR.y) * scale;
+        float t = Mathf.Max(vTL.y, vTR.y) * scale;
+
+        // The wide _renderTexture in 3D mode contains a per-eye render in each half. Resolve which
+        // half this eye renders into, and the centered pixel sub-rect within that half (using the
+        // dynamic-resolution _lastPixelWidth/Height if set, otherwise the full eye dimensions).
+        int eyeWidth = _renderTexture.width / 2;
+        int eyeHeight = _renderTexture.height;
+        int pixWidth = (_lastPixelWidth > 2 * PixelBorder) ? _lastPixelWidth : eyeWidth;
+        int pixHeight = (_lastPixelHeight > 2 * PixelBorder) ? _lastPixelHeight : eyeHeight;
+        pixWidth = Mathf.Clamp(pixWidth, 32, eyeWidth);
+        pixHeight = Mathf.Clamp(pixHeight, 32, eyeHeight);
+        int xOffsetInHalf = (eyeWidth - pixWidth) / 2;
+        int yOffset = (eyeHeight - pixHeight) / 2;
+        int xOffset = (eyeIndex == 0 ? 0 : eyeWidth) + xOffsetInHalf;
+
+        // Expand the off-axis frustum to include the pixel-border padding so the canvas content fills
+        // only the INNER sub-rect of the rasterized region. The compositor's srcRect (set by
+        // ApplyViewportScale) samples that same inner rect, so canvas pixels end up where the compositor
+        // expects them. Without this expansion, the canvas would fill the whole rasterized rect and the
+        // compositor would crop the edges (visible as the canvas appearing to grow/shrink with dynamic res).
+        int innerPixelWidth = Mathf.Max(1, pixWidth - 2 * PixelBorder);
+        int innerPixelHeight = Mathf.Max(1, pixHeight - 2 * PixelBorder);
+        float padScaleX = pixWidth / (float)innerPixelWidth;
+        float padScaleY = pixHeight / (float)innerPixelHeight;
+        float lPad = l * padScaleX;
+        float rPad = r * padScaleX;
+        float bPad = b * padScaleY;
+        float tPad = t * padScaleY;
+
+        if (rPad - lPad <= 0f || tPad - bPad <= 0f)
+        {
+            return;
+        }
+
+        var projMatrix = Matrix4x4.Frustum(lPad, rPad, bPad, tPad, near, far);
+
+        _camera.orthographic = false;
+        _camera.worldToCameraMatrix = worldToCamera;
+        _camera.projectionMatrix = projMatrix;
+        _camera.cullingMask = 1 << CanvasRenderLayer;
+
+        // Always temp-RT for 3D: render at exactly pixWidth x pixHeight (per-eye dims), then
+        // Graphics.CopyTexture into the appropriate half of the wide _renderTexture at the integer
+        // offset. Both eyes share the same wide RT so we cannot rasterize directly via _camera.rect.
+        var descriptor = new RenderTextureDescriptor(pixWidth, pixHeight,
+            GraphicsFormat.R8G8B8A8_SRGB, GraphicsFormat.D24_UNorm_S8_UInt, 0);
+        var tempRT = RenderTexture.GetTemporary(descriptor);
+        tempRT.Create();
+        _camera.targetTexture = tempRT;
+        _camera.rect = new Rect(0, 0, 1, 1);
         _camera.Render();
+        Graphics.CopyTexture(tempRT, 0, 0, 0, 0, pixWidth, pixHeight, _renderTexture, 0, 0, xOffset, yOffset);
+        RenderTexture.ReleaseTemporary(tempRT);
     }
 
     // Calculate a billboard rotation of our rect based on the curve parameters and the current camera position

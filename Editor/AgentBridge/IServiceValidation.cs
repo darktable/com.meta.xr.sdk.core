@@ -92,7 +92,7 @@ namespace Meta.XR.AI.AgentBridge
 
     /// <summary>
     /// Interface for AI services that support configuration validation.
-    /// Validation should be performed without consuming AI inference tokens.
+    /// Validation must not consume inference tokens.
     /// </summary>
     public interface IServiceValidation
     {
@@ -103,7 +103,6 @@ namespace Meta.XR.AI.AgentBridge
 
         /// <summary>
         /// Validates the service configuration asynchronously.
-        /// This should NOT consume any AI inference tokens - only check connectivity/availability.
         /// </summary>
         /// <returns>The validation result.</returns>
         Task<ValidationResult> ValidateConfigurationAsync();

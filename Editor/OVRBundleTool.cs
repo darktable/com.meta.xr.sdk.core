@@ -134,7 +134,7 @@ public class OVRBundleTool : EditorWindow
     private const string deployScenesWhenDeployingApkPrefName = "OVRBundleTool_DeployScenesWithAPK";
     private const string useOptionalTransitionApkPackagePrefName = "OVRBundleTool_UseOptionalPackageName";
 
-    [MenuItem("Meta/Tools/OVR Build/OVR Scene Quick Preview %l", false, 90010)]
+    [MenuItem("Window/Meta/Tools/OVR Build/OVR Scene Quick Preview %l", false, 90010)]
     static void Init()
     {
         currentApkStatus = ApkStatus.UNKNOWN;

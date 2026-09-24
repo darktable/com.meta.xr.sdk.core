@@ -2,16 +2,8 @@
 name: hz-meta-xr-operator-interaction-poke
 description: "How to poke Meta XR Interaction SDK poke interactables in Unity using Meta XR Operator — physical 3D buttons, tilted touchpad/keypad surfaces, UI buttons, and any other PokeInteractable. Covers locating the press point, computing the surface normal for any tilt, positioning the controller via aim pose along that normal, performing the press motion, and verifying via the appropriate signal (transform depression for physical buttons; UI state change for canvas buttons)."
 allowed-tools:
+  - Bash(metavr:*)
   - Bash(hzdb:*)
-tags:
-  - agentic-xr
-  - openxr
-  - unity
-  - meta
-  - interaction-sdk
-  - poke
-  - button
-  - interactable
 ---
 
 # Meta XR Operator Interaction Poke

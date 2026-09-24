@@ -25,22 +25,22 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
 {
     /// <summary>
     /// Orchestrator component that owns and wires up all DevAgent components.
-    /// Creates <see cref="ConversationManager"/> for state management,
-    /// <see cref="AgentBridgeIntegration"/> for remote AI communication,
-    /// and <see cref="MCPBridgeIntegration"/> for MCP tool execution.
+    /// Creates <see cref="ConversationManager"/> for state management and
+    /// <see cref="AgentBridgeIntegration"/> for remote AI communication.
+    ///
+    /// The in-headset assistant's runtime tools are provided by Meta XR Operator
+    /// (registered via the XR Operator binder), not by the editor MCP bridge.
     ///
     /// This establishes clean unidirectional dependencies:
-    /// LLMDialogPanel → DevAgentController → ConversationManager / AgentBridgeIntegration / MCPBridgeIntegration
+    /// LLMDialogPanel → DevAgentController → ConversationManager / AgentBridgeIntegration
     /// </summary>
     internal class DevAgentController : MonoBehaviour
     {
         private ConversationManager _conversationManager;
         private AgentBridgeIntegration _integration;
-        private MCPBridgeIntegration _mcpIntegration;
 
         internal ConversationManager ConversationManager => _conversationManager;
         internal AgentBridgeIntegration Integration => _integration;
-        internal MCPBridgeIntegration McpIntegration => _mcpIntegration;
 
         // For testing: allow client injection
         private IRemoteAgentBridgeClient _injectedClient;
@@ -59,15 +59,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         }
 
         /// <summary>
-        /// Set the MCP client for testing. If called after Initialize(), forwards to the MCP integration.
-        /// Must be called before Start() runs (before the first yield return null).
-        /// </summary>
-        internal void SetMcpClient(Meta.MCPBridge.Runtime.ToolProviderClient client)
-        {
-            _mcpIntegration?.SetClient(client);
-        }
-
-        /// <summary>
         /// Initialize the controller and create child components.
         /// Called immediately after AddComponent to ensure ConversationManager is available.
         /// </summary>
@@ -77,16 +68,8 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
 
             _conversationManager = gameObject.AddComponent<ConversationManager>();
             _integration = gameObject.AddComponent<AgentBridgeIntegration>();
-            _mcpIntegration = gameObject.AddComponent<MCPBridgeIntegration>();
 
             _integration.Initialize(_conversationManager, _injectedClient);
-
-            // Initialize MCP integration with server settings
-            var settings = RuntimeSettings.Instance;
-            if (settings != null)
-            {
-                _mcpIntegration.Initialize(settings.ServerAddress, settings.McpServerPort);
-            }
         }
 
         private void Awake()

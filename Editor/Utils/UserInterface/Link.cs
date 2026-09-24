@@ -108,7 +108,7 @@ namespace Meta.XR.Editor.UserInterface
         {
             var unifiedEvent = new UnifiedEventData(Telemetry.FalcoEventName.LinkClick)
             {
-                isEssential = false,
+                isEssential = true,
                 productType = TelemetryProductType.Editor
             };
             AddFalcoMetadata(unifiedEvent);

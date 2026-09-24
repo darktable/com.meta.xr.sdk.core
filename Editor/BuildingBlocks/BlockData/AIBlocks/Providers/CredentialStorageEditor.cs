@@ -20,6 +20,7 @@
 
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using Meta.XR.BuildingBlocks.Editor;
 using Meta.XR.Telemetry;
 using UnityEditor;
 using UnityEngine;
@@ -592,9 +593,6 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             ScanOnce();
         }
 
-        [MenuItem("Meta/Tools/AI/Credentials/Auto-Register Providers Now")]
-        private static void ManualScan() => ScanOnce();
-
         /// <summary>
         /// Scans all provider assets in the project and autopopulates credentials from the first
         /// non-overridden asset of each provider type that has a non-empty API key.
@@ -714,6 +712,7 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
                     "[CredentialStorage] No credentials to auto-populate. Either all entries already have keys, or no provider assets with API keys were found.");
             }
         }
+
 
         private static void ScanOnce()
         {

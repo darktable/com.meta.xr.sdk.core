@@ -53,7 +53,9 @@ namespace Meta.XR.Editor.PlayCompanion
         [Reflection(AssemblyTypeReference = typeof(UnityEditor.Editor), TypeName = "UnityEditor.Toolbars.MainToolbar", Name = "SetDisplayedAll")]
         private static readonly StaticMethodInfoHandleWithWrapperAction<string, bool> SetDisplayedAll = new();
 
-        private const string MainToolbarPath = "MetaXR/PlayCompanion";
+        private const string MainToolbarPath = "Meta XR SDK/Play Companion";
+
+        private static readonly string OverlayNameMatch = MainToolbarPath.Replace(" ", "");
         private const string ContainerClass = "metaxr-playcompanion-container";
         private const string ContainerName = "MetaXRPlayCompanion";
         private const string UnityOverlayId = "unity-overlay";
@@ -162,7 +164,7 @@ namespace Meta.XR.Editor.PlayCompanion
 
                 foreach (var overlay in overlays)
                 {
-                    if (overlay.name == null || !overlay.name.Contains(MainToolbarPath)) continue;
+                    if (overlay.name == null || !overlay.name.Contains(OverlayNameMatch)) continue;
 
                     var unityOverlay = overlay.Q(UnityOverlayId);
                     var overlayContent = unityOverlay?.Q(OverlayContentId);
@@ -291,10 +293,21 @@ namespace Meta.XR.Editor.PlayCompanion
                 return;
             }
 
+#if USE_MAINTOOLBAR
             if (!Enabled)
             {
                 Enable();
             }
+            else if (_container == null || _container.panel == null)
+            {
+                Disable();
+            }
+#else
+            if (!Enabled)
+            {
+                Enable();
+            }
+#endif
 
             if (Buttons.Count == 0) return;
 

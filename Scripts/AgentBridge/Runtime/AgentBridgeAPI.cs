@@ -255,6 +255,25 @@ namespace Meta.XR.AI.AgentBridge
         }
 
         /// <summary>
+        /// Get the cumulative token/cost usage for a specific caller's conversation.
+        /// Currently populated for Claude Code; other providers report zeros until wired.
+        /// Returns zeros when no session has run or the provider does not report usage.
+        /// </summary>
+        /// <param name="caller">The caller to get usage for</param>
+        /// <returns>The usage totals for the specified caller</returns>
+        /// <example>
+        /// <code>
+        /// var caller = new CallerIdentity("MyTool");
+        /// var usage = AgentBridgeAPI.GetUsageForCaller(caller);
+        /// Debug.Log($"Tokens: {usage.TotalTokens} (in {usage.InputTokens}, out {usage.OutputTokens})");
+        /// </code>
+        /// </example>
+        public static UsageTotals GetUsageForCaller(CallerIdentity caller)
+        {
+            return AgentBridgeCoreService.GetUsageForCaller(caller);
+        }
+
+        /// <summary>
         /// Check if there is an active conversation session.
         /// </summary>
         /// <returns>True if there's an active session, false otherwise</returns>

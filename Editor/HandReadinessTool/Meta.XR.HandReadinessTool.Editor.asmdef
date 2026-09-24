@@ -3,14 +3,17 @@
     "rootNamespace": "Meta.HandReadinessTool.Editor",
     "references": [
         "Oculus.VR.Editor",
+        "Oculus.VR.Scripts.Editor",
         "Oculus.VR",
         "meta.xr.ai.agentbridge",
         "meta.xr.ai.agentbridge.editor",
         "Meta.XR.Editor.UserInterface",
         "Meta.XR.Editor.Id",
+        "Meta.XR.Editor.Settings",
         "Meta.XR.Editor.ToolingSupport",
         "Meta.XR.Editor.Callbacks",
-        "Meta.XR.Editor.RemoteContent"
+        "Meta.XR.Editor.RemoteContent",
+        "Meta.XR.Editor.Notifications"
     ],
     "includePlatforms": [
         "Editor"

@@ -21,6 +21,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Meta.XR.Editor.UserInterface.RLDS;
@@ -40,15 +41,13 @@ namespace Meta.HandReadinessTool.Editor.UI
     }
 
     /// <summary>
-    /// Results screen — "Hand optimization report." Header with device tag
-    /// + progress bar; table with Recommendation / Priority / Type columns;
-    /// footer with Export + Check optimization buttons.
+    /// Results screen — "Device readiness report." Header with progress bar;
+    /// table with Recommendation / Priority / Type columns;
+    /// footer with Export + Check readiness buttons.
     /// </summary>
     public static class ResultsScreen
     {
-
-        /// <summary>Creates the hand optimization results screen UI with a progress header and issue table.</summary>
-        /// <param name="selectedDeviceName">The name of the selected target device.</param>
+        /// <summary>Creates the device readiness results screen UI with a progress header and issue table.</summary>
         /// <param name="issues">The list of issues to display in the results table.</param>
         /// <param name="onViewDetails">Callback invoked when the user requests details for a non-automated issue.</param>
         /// <param name="onApplyFix">Callback invoked when the user applies an automated fix for an issue.</param>
@@ -56,11 +55,14 @@ namespace Meta.HandReadinessTool.Editor.UI
         /// <param name="onCheckReadiness">Callback invoked when the Check readiness button is clicked.</param>
         /// <param name="onReanalyze">Callback invoked when the Reanalyze project link is clicked.</param>
         /// <param name="onApplyAllAutomated">Callback invoked when the Apply all automated fixes button is clicked.</param>
+        /// <param name="onMarkAllComplete">Callback invoked when the Mark all as completed button is clicked.</param>
         /// <param name="onCopyToClipboard">Callback invoked when an issue's overflow "Copy to clipboard" action is chosen.</param>
         /// <param name="onMarkComplete">Callback invoked when an issue's overflow "Mark as complete" action is chosen.</param>
+        /// <param name="aiResumeCommand">Terminal command to resume the AI session; the resume banner is shown only when this is non-empty (provider-dependent).</param>
+        /// <param name="onResumeCommandCopied">Callback invoked when the resume command is copied to the clipboard.</param>
+        /// <param name="isAiReport">Whether these results came from an AI-powered check.</param>
         /// <returns>A <see cref="VisualElement"/> containing the complete results screen.</returns>
         public static VisualElement Create(
-            string selectedDeviceName,
             List<IssueData> issues,
             Action<IssueData> onViewDetails,
             Action<IssueData> onApplyFix,
@@ -68,14 +70,24 @@ namespace Meta.HandReadinessTool.Editor.UI
             Action onCheckReadiness,
             Action onReanalyze = null,
             Action onApplyAllAutomated = null,
+            Action onMarkAllComplete = null,
             Action<IssueData> onCopyToClipboard = null,
-            Action<IssueData> onMarkComplete = null)
+            Action<IssueData> onMarkComplete = null,
+            string aiResumeCommand = null,
+            Action onResumeCommandCopied = null,
+            string aiTokensSummary = null,
+            bool isAiReport = false)
         {
             var allIssues = issues ?? new List<IssueData>();
             int totalCount = allIssues.Count;
             int fixedCount = allIssues.Count(i => i.IsFixed);
             var unfixedIssues = allIssues.Where(i => !i.IsFixed).ToList();
-            bool allComplete = totalCount > 0 && unfixedIssues.Count == 0;
+            // Complete when nothing is outstanding — including the empty case, where an
+            // already-ready project has no rows to resolve.
+            bool allComplete = unfixedIssues.Count == 0;
+
+            bool anyAutomatedRemaining =
+                allIssues.Any(i => i.Category == IssueCategory.Automation && !i.IsFixed);
 
             var container = new VisualElement();
             container.style.flexGrow = 1;
@@ -89,7 +101,13 @@ namespace Meta.HandReadinessTool.Editor.UI
             contentArea.style.paddingTop = RLDSConstants.Spacing.SizeXL;
 
             // Page header — stays fixed at the top while the table scrolls.
-            contentArea.Add(CreateHeader(totalCount, fixedCount, allComplete, onApplyAllAutomated));
+            contentArea.Add(CreateHeader(
+                totalCount,
+                fixedCount,
+                allComplete,
+                anyAutomatedRemaining,
+                onApplyAllAutomated,
+                onMarkAllComplete));
 
             // Column header — also stays fixed so the column titles are always visible.
             contentArea.Add(CreateTableHeader());
@@ -103,13 +121,20 @@ namespace Meta.HandReadinessTool.Editor.UI
 
             var tableScrollView = new ScrollView();
             tableScrollView.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-            tableScrollView.verticalScrollerVisibility = ScrollerVisibility.Hidden;
+            // Auto (not Hidden) so long recommendation lists scroll instead of overflowing the
+            // screen and pushing the footer off-view.
+            tableScrollView.verticalScrollerVisibility = ScrollerVisibility.Auto;
             tableScrollView.style.flexGrow = 1;
             tableScrollView.style.paddingBottom = RLDSConstants.Spacing.SizeXL;
             tableScrollView.Add(CreateTableRows(orderedIssues, onViewDetails, onApplyFix, onCopyToClipboard, onMarkComplete));
             contentArea.Add(tableScrollView);
 
             container.Add(contentArea);
+
+            if (isAiReport && !string.IsNullOrEmpty(aiResumeCommand))
+            {
+                container.Add(CreateResumeBanner(aiResumeCommand, onResumeCommandCopied, aiTokensSummary));
+            }
 
             // Footer
             container.Add(CreateFooter(onExport, onCheckReadiness, onReanalyze, allComplete));
@@ -122,51 +147,58 @@ namespace Meta.HandReadinessTool.Editor.UI
         // ----------------------------------------------------------------
 
         private static VisualElement CreateHeader(
-            int totalCount, int fixedCount, bool allComplete, Action onApplyAll)
+            int totalCount, int fixedCount, bool allComplete,
+            bool anyAutomatedRemaining, Action onApplyAll, Action onMarkAllComplete)
         {
             var header = new VisualElement();
             header.style.marginBottom = RLDSConstants.Spacing.SizeMD;
 
-            // Top row: "Apply all automated fixes" button when work remains, or a
-            // disabled "Automated fixes completed" badge when everything is resolved.
-            var topRow = new VisualElement();
-            topRow.style.flexDirection = FlexDirection.Row;
-            topRow.style.justifyContent = Justify.FlexEnd;
-            topRow.style.alignItems = Align.Center;
-            topRow.style.marginBottom = RLDSConstants.Spacing.Size3XS;
-
-            if (allComplete)
+            if (!allComplete)
             {
-                topRow.Add(CreateCompletedBadge("Automated fixes completed"));
-            }
-            else if (onApplyAll != null)
-            {
-                var applyAllBtn = new RLDSButton(
-                    new ActionLinkDescription
-                    {
-                        Content = new GUIContent("Apply all automated fixes"),
-                        Action = onApplyAll,
-                    },
-                    RLDSConstants.ButtonVariant.Secondary, RLDSConstants.ButtonSize.Small)
+                bool canApplyAutomated = anyAutomatedRemaining && onApplyAll != null;
+                var action = canApplyAutomated ? onApplyAll : onMarkAllComplete;
+                if (action != null)
                 {
-                    LeftIcon = HandReadinessIcons.ApplyAutomated,
-                }.Build();
-                topRow.Add(applyAllBtn);
+                    var topRow = new VisualElement();
+                    topRow.style.flexDirection = FlexDirection.Row;
+                    topRow.style.justifyContent = Justify.FlexEnd;
+                    topRow.style.alignItems = Align.Center;
+                    topRow.style.marginBottom = RLDSConstants.Spacing.Size3XS;
+
+                    var bulkActionButton = new RLDSButton(
+                        new ActionLinkDescription
+                        {
+                            Content = new GUIContent(canApplyAutomated
+                                ? "Apply all automated fixes"
+                                : "Mark all as completed"),
+                            Action = action,
+                        },
+                        RLDSConstants.ButtonVariant.Secondary, RLDSConstants.ButtonSize.Small)
+                    {
+                        LeftIcon = canApplyAutomated
+                            ? HandReadinessIcons.ApplyAutomated
+                            : HandReadinessIcons.MarkComplete,
+                    }.Build();
+                    topRow.Add(bulkActionButton);
+                    header.Add(topRow);
+                }
             }
 
-            header.Add(topRow);
-
-            var title = new Label("Hands optimization report");
+            var title = new Label(HandReadinessScreenContentProvider.Get(
+                "results.title", "Device readiness report"));
             title.AddToClassList(RLDSConstants.Typography.Heading2);
             title.style.marginBottom = RLDSConstants.Spacing.Size2XS;
             header.Add(title);
 
-            // Subtitle — kept unchanged in both states so the screen continues to
-            // describe its purpose; the completed status moves to a separate row below.
+            // When there's nothing to resolve (already-ready project), say so instead of
+            // "Resolve these 0 recommendations".
             int unfixedCount = totalCount - fixedCount;
-            int subtitleCount = allComplete ? totalCount : unfixedCount;
-            var subtitle = new Label(
-                $"Resolve these {subtitleCount} recommendations to ensure your app works without controllers");
+            string subtitleText = totalCount == 0
+                ? HandReadinessScreenContentProvider.Get(
+                    "results.empty",
+                    "Your project is ready — no device readiness recommendations found.")
+                : $"Resolve these {(allComplete ? totalCount : unfixedCount)} recommendations to get your project ready for the next generation of Meta XR devices";
+            var subtitle = new Label(subtitleText);
             subtitle.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
             subtitle.style.marginBottom = RLDSConstants.Spacing.SizeXS;
             header.Add(subtitle);
@@ -175,8 +207,9 @@ namespace Meta.HandReadinessTool.Editor.UI
             // check + status line once everything is resolved.
             if (allComplete)
             {
-                header.Add(CreateCompletedStatusRow(
-                    "Recommendations are completed. Click \"Confirm\" to verify."));
+                header.Add(CreateCompletedStatusRow(totalCount == 0
+                    ? "No action needed — your project is already device-ready."
+                    : "Recommendations are completed. Click \"Confirm\" to verify."));
             }
             else
             {
@@ -207,32 +240,6 @@ namespace Meta.HandReadinessTool.Editor.UI
             }
 
             return header;
-        }
-
-        /// <summary>
-        /// "Automated fixes completed" pill used in the top-right when everything is
-        /// resolved. Positive BadgeTag (green check + green-tinted text + outline).
-        /// </summary>
-        private static VisualElement CreateCompletedBadge(string text)
-        {
-            var badge = new VisualElement();
-            badge.AddToClassList(RLDSConstants.BadgeTag.Base);
-            badge.AddToClassList(RLDSConstants.BadgeTag.Positive);
-            badge.style.flexDirection = FlexDirection.Row;
-            badge.style.alignItems = Align.Center;
-            badge.style.alignSelf = Align.FlexStart;
-
-            var icon = HandReadinessResources.CreateTintableIcon(
-                "icon_check_circle", RLDSConstants.IconSize.SizeXS);
-            icon.AddToClassList(HandReadinessStyles.Icon.ThemedPositive);
-            icon.style.marginRight = RLDSConstants.Spacing.Size2XS;
-            badge.Add(icon);
-
-            var label = new Label(text);
-            label.AddToClassList(RLDSConstants.BadgeTag.Label);
-            badge.Add(label);
-
-            return badge;
         }
 
         /// <summary>
@@ -552,11 +559,10 @@ namespace Meta.HandReadinessTool.Editor.UI
                 case IssueCategory.Automation:
                     items.Add(("View details", () => onViewDetails?.Invoke(issue)));
                     break;
-                case IssueCategory.AI:
-                    items.Add(("Apply AI recommended fix", () => onViewDetails?.Invoke(issue)));
-                    items.Add(("Mark as complete", () => onMarkComplete?.Invoke(issue)));
-                    break;
                 default:
+                    // Manual and AI recommendations have no automated apply backend,
+                    // so the overflow offers a real copy-to-clipboard (issue details
+                    // as Markdown for an AI assistant) plus mark-as-complete.
                     items.Add(("Copy to clipboard", () => onCopyToClipboard?.Invoke(issue)));
                     items.Add(("Mark as complete", () => onMarkComplete?.Invoke(issue)));
                     break;
@@ -635,6 +641,9 @@ namespace Meta.HandReadinessTool.Editor.UI
             Action onExport, Action onCheckReadiness, Action onReanalyze, bool allComplete)
         {
             var footer = new VisualElement();
+            // Pin the footer so a tall table can't shrink it and clip the action buttons; the
+            // table scrolls instead.
+            footer.style.flexShrink = 0;
 
             // Divider
             var divider = new VisualElement();
@@ -711,6 +720,96 @@ namespace Meta.HandReadinessTool.Editor.UI
             footer.Add(bar);
 
             return footer;
+        }
+
+        // ----------------------------------------------------------------
+        // Resume banner (AI path)
+        // ----------------------------------------------------------------
+
+        private static VisualElement CreateResumeBanner(string resumeCommand, Action onCopied, string tokensSummary = null)
+        {
+            var banner = new VisualElement();
+            banner.AddToClassList(HandReadinessStyles.ResumeBanner.Root);
+
+            var row = new VisualElement();
+            row.AddToClassList(HandReadinessStyles.ResumeBanner.Row);
+
+            var descLabel = new Label(
+                (string.IsNullOrEmpty(tokensSummary) ? "" : tokensSummary) +
+                "Continue this analysis in your terminal, or close this window anytime — " +
+                "your session is saved.");
+            descLabel.AddToClassList(RLDSConstants.Typography.Meta);
+            descLabel.AddToClassList(HandReadinessStyles.ResumeBanner.Description);
+            descLabel.style.whiteSpace = WhiteSpace.Normal;
+            row.Add(descLabel);
+
+            row.Add(CreateResumeCopyButton(resumeCommand, onCopied));
+
+            banner.Add(row);
+            return banner;
+        }
+
+        private static VisualElement CreateResumeCopyButton(string command, Action onCopied)
+        {
+            UnityEngine.UIElements.Button button = null;
+            UnityEngine.UIElements.IVisualElementScheduledItem resetItem = null;
+            var action = new ActionLinkDescription
+            {
+                Content = new GUIContent(command),
+                Action = () =>
+                {
+                    EditorGUIUtility.systemCopyBuffer = command;
+                    onCopied?.Invoke();
+                    ShowResumeCopied(button, true);
+                    // Cancel any pending reset so a rapid re-click doesn't revert early.
+                    resetItem?.Pause();
+                    resetItem = button.schedule.Execute(() =>
+                    {
+                        if (button.panel == null)
+                        {
+                            return;
+                        }
+                        ShowResumeCopied(button, false);
+                    }).StartingIn(1500);
+                },
+            };
+            button = (UnityEngine.UIElements.Button)new RLDSButton(
+                action, RLDSConstants.ButtonVariant.Secondary, RLDSConstants.ButtonSize.XSmall)
+            {
+                LeftIcon = HandReadinessIcons.Copy,
+            }.Build();
+            button.AddToClassList(HandReadinessStyles.ResumeBanner.Copy);
+            button.tooltip = command;
+            var cmdLabel = button.Q<Label>();
+            if (cmdLabel != null)
+            {
+                cmdLabel.AddToClassList(RLDSConstants.Typography.BodySmallCode);
+                // The command (cd + resume) can be long; ellipsize it instead of
+                // stretching the banner — the full command is still copied and on hover.
+                cmdLabel.style.whiteSpace = WhiteSpace.NoWrap;
+                cmdLabel.style.overflow = Overflow.Hidden;
+                cmdLabel.style.textOverflow = TextOverflow.Ellipsis;
+            }
+            return button;
+        }
+
+        // Sets the copy button's copied (green check) or idle (copy icon) visual.
+        private static void ShowResumeCopied(UnityEngine.UIElements.Button button, bool copied)
+        {
+            if (button == null)
+            {
+                return;
+            }
+            var iconEl = button.Q(className: RLDSConstants.Button.IconLeft);
+            if (iconEl == null)
+            {
+                return;
+            }
+            button.EnableInClassList(HandReadinessStyles.ResumeBanner.CopyCopied, copied);
+            var icon = copied
+                ? Meta.XR.Editor.UserInterface.Styles.Contents.CheckMaskIcon
+                : HandReadinessIcons.Copy;
+            icon.RegisterToImageLoaded(tex => iconEl.style.backgroundImage = tex as Texture2D);
         }
     }
 

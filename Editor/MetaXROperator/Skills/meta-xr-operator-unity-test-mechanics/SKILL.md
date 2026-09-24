@@ -2,15 +2,8 @@
 name: hz-meta-xr-operator-unity-test-mechanics
 description: Runs AI-driven test attempts in Unity Meta Quest and Horizon OS projects using a bounded 3-attempt retry policy with an explicit understand → set up → execute → evaluate → report flow.
 allowed-tools:
+  - Bash(metavr:*)
   - Bash(hzdb:*)
-tags:
-  - agentic-xr
-  - unity
-  - openxr
-  - mcp
-  - testing
-  - retry
-  - vr
 ---
 
 # Unity Test Mechanics

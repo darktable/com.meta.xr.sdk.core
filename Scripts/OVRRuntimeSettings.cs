@@ -93,6 +93,7 @@ public class OVRRuntimeSettings : OVRRuntimeAssetsBase
     }
 
     [SerializeField] private bool enableFaceTrackingVisemesOutput = false;
+
     public bool EnableFaceTrackingVisemesOutput
     {
         get => enableFaceTrackingVisemesOutput;
@@ -152,8 +153,36 @@ public class OVRRuntimeSettings : OVRRuntimeAssetsBase
 
     public bool QuestVisibilityMeshOverriden = false;
 
+    [SerializeField] private bool fovSimulationEnabled;
+
+    internal bool FovSimulationEnabled
+    {
+        get => fovSimulationEnabled;
+        set => fovSimulationEnabled = value;
+    }
+
 
 #if UNITY_EDITOR
+    internal static void SetAndroidFovSimulationEnabled(
+        OVRRuntimeSettings settings,
+        bool enabled,
+        string source)
+    {
+        if (settings == null)
+        {
+            return;
+        }
+
+        if (settings.FovSimulationEnabled == enabled)
+        {
+            return;
+        }
+
+        settings.FovSimulationEnabled = enabled;
+        CommitRuntimeSettings(settings);
+        OVRFovSimulationTelemetry.SendSettingChanged(source, enabled);
+    }
+
     /// <summary>
     /// Returns the path to the OVRRuntimeSettings asset in the project as a string.
     /// </summary>

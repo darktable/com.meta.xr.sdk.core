@@ -62,7 +62,6 @@ namespace Meta.XR.MetaWand.Editor
             OnClickDelegate = ShowAssetLibrary,
             IsStatusMenuItemDarker = true,
             Experimental = true,
-            DrawExperimentalInStatusMenu = true,
             EnableRampUp = true
         };
         public static void ShowAssetLibrary(Origins origin) => AssetLibraryWindow.ShowWindow(origin);

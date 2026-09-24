@@ -39,8 +39,8 @@ namespace Meta.HandReadinessTool.Editor
         // changes the ramp-up key and drops the tool from the menu. Relabel the
         // user-facing menu entry via DisplayName instead.
         private const string ToolName = "Hands readiness";
-        private const string DisplayLabel = "Hands optimizer";
-        private const string MenuDescription = "Optimize your project for hands-only Meta experiences";
+        private const string DisplayLabel = "Device Readiness Check";
+        private const string MenuDescription = "Get your project ready for the next generation of Meta XR device requirements";
 
         internal static readonly TextureContent StatusIcon = TextureContent.CreateContent(
             "icon_hand_tracking.png",
@@ -58,6 +58,7 @@ namespace Meta.HandReadinessTool.Editor
             MenuCategory = MenuCategory.Tools,
             AddToMenu = true,
             CanBeNew = true,
+            DrawExperimentalInStatusMenu = true,
             EnableRampUp = true,
             OnClickDelegate = _ => HandReadinessToolWindow.ShowWindow(),
         };

@@ -50,5 +50,13 @@ namespace Meta.XR.AI.AgentBridge
         /// Stores the last error message if any occurred.
         /// </summary>
         public string? LastError = null;
+
+        /// <summary>
+        /// Cumulative AI token/cost usage for this conversation, when the active
+        /// provider reports it. The type is nullable only so states persisted before
+        /// this field existed deserialize cleanly (the field is absent → null); every
+        /// freshly created state gets a non-null default from the initializer below.
+        /// </summary>
+        public UsageTotals? Usage = new UsageTotals();
     }
 }

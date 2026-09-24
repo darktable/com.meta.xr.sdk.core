@@ -3,6 +3,8 @@ Shader "UI/Prerendered Opaque"
     Properties
     {
         _MainTex("Texture", 2D) = "white" {}
+        _MainTex_ST_Left ("_MainTex_ST_Left", Vector) = (1, 1, 0, 0)
+        _MainTex_ST_Right ("_MainTex_ST_Right", Vector) = (1, 1, 0, 0)
         _Color("Color", Color) = (1,1,1,1)
         [Enum(UnityEngine.Rendering.BlendMode)] _AlphaWrite("Alpha Write", Int) = 0
     }
@@ -38,7 +40,8 @@ Shader "UI/Prerendered Opaque"
             };
 
             sampler2D _MainTex;
-            float4 _MainTex_ST;
+            float4 _MainTex_ST_Left;
+            float4 _MainTex_ST_Right;
             fixed4 _Color;
 
             v2f vert(appdata_t v) {
@@ -47,7 +50,10 @@ Shader "UI/Prerendered Opaque"
                 UNITY_TRANSFER_INSTANCE_ID(v, o);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 o.vertex = UnityObjectToClipPos(v.vertex);
-                o.texcoord = TRANSFORM_TEX(v.texcoord, _MainTex);
+                // Per-eye scale/offset selected by stereo eye index. In mono mode the C# code sets
+                // both to the same value so this branches to identical UVs.
+                float4 st = (unity_StereoEyeIndex == 0) ? _MainTex_ST_Left : _MainTex_ST_Right;
+                o.texcoord = v.texcoord * st.xy + st.zw;
                 return o;
             }
 

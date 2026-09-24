@@ -111,10 +111,16 @@ namespace Meta.HandReadinessTool.Editor
         /// asks the AI to map fresh recommendations back to prior IDs and to flag prior items it
         /// believes are now resolved by the current code state.
         /// </param>
+        /// <param name="includeJsonResponseFormat">
+        /// True (tool's own AI check) appends the Unity JSON response-format contract the tool
+        /// parses. False (the copyable "run it yourself" prompt) omits it so the prompt reads as a
+        /// plain analysis request for a developer running it in their own agent.
+        /// </param>
         /// <returns>The complete prompt to send to the AI.</returns>
         public static string BuildCompletePrompt(
             string projectDescription = null,
-            List<IssueData> priorAiSuggestions = null)
+            List<IssueData> priorAiSuggestions = null,
+            bool includeJsonResponseFormat = true)
         {
             var systemPrompt = LoadSystemPrompt();
             var handTrackingKnowledge = LoadHandTrackingKnowledge();
@@ -126,6 +132,7 @@ namespace Meta.HandReadinessTool.Editor
             }
 
             var promptBuilder = new System.Text.StringBuilder();
+            bool isRescan = priorAiSuggestions != null && priorAiSuggestions.Count > 0;
 
             // Add system prompt
             promptBuilder.AppendLine(systemPrompt);
@@ -159,6 +166,20 @@ namespace Meta.HandReadinessTool.Editor
                 promptBuilder.AppendLine();
             }
 
+            if (includeJsonResponseFormat && !isRescan)
+            {
+                promptBuilder.AppendLine("---");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("# Required Device FoV Validation Recommendation");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("Always include the following validation task as one Low-priority recommendation on an initial scan, even when the static analysis finds no FoV issue:");
+                promptBuilder.AppendLine("- Use the stable `taskUid` `hrt-ai:validate-device-fov-simulation`.");
+                promptBuilder.AppendLine("- Ask the developer to play through the app on Quest at least once with device field of view simulation enabled and verify that important content remains visible.");
+                promptBuilder.AppendLine("- Set both priority and complexity to `Low`.");
+                promptBuilder.AppendLine("- Present it as validation, not as evidence that the project has a defect.");
+                promptBuilder.AppendLine();
+            }
+
             // Add project description if provided
             if (!string.IsNullOrEmpty(projectDescription))
             {
@@ -174,7 +195,6 @@ namespace Meta.HandReadinessTool.Editor
                 promptBuilder.AppendLine();
             }
 
-            bool isRescan = priorAiSuggestions != null && priorAiSuggestions.Count > 0;
             if (isRescan)
             {
                 promptBuilder.AppendLine("---");
@@ -203,43 +223,55 @@ namespace Meta.HandReadinessTool.Editor
                 promptBuilder.AppendLine();
             }
 
-            // Add Unity-specific JSON response format requirement
-            // (This is NOT in SKILL.md because Claude Code users get conversational output)
-            promptBuilder.AppendLine("---");
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine("# Response Format (Unity Tool)");
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine("You are being called from a Unity Editor tool. Your response MUST end with a JSON block wrapped in ```json and ``` markers.");
-            promptBuilder.AppendLine("You may include natural language analysis BEFORE the JSON block.");
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine("```json");
-            promptBuilder.AppendLine("{");
-            promptBuilder.AppendLine("  \"analysisComplete\": true,");
-            promptBuilder.AppendLine("  \"projectType\": \"string describing the type of game/experience\",");
-            promptBuilder.AppendLine("  \"suggestions\": [");
-            promptBuilder.AppendLine("    {");
-            promptBuilder.AppendLine("      \"taskUid\": \"hrt-ai:short-stable-slug\",");
-            promptBuilder.AppendLine("      \"previousId\": \"hrt-ai:matching-prior-id-or-omit\",");
-            promptBuilder.AppendLine("      \"title\": \"Short title (max 60 chars)\",");
-            promptBuilder.AppendLine("      \"description\": \"What was found and what should change\",");
-            promptBuilder.AppendLine("      \"currentImplementation\": \"What you found in their code\",");
-            promptBuilder.AppendLine("      \"handTrackingAdaptation\": \"How to enhance with hand tracking\",");
-            promptBuilder.AppendLine("      \"implementationSteps\": [\"Step 1\", \"Step 2\"],");
-            promptBuilder.AppendLine("      \"complexity\": \"Low|Medium|High\",");
-            promptBuilder.AppendLine("      \"priority\": \"High|Medium|Low\"");
-            promptBuilder.AppendLine("    }");
-            promptBuilder.AppendLine("  ],");
-            promptBuilder.AppendLine("  \"resolvedFromPrior\": [\"hrt-ai:prior-id-1\", \"hrt-ai:prior-id-2\"]");
-            promptBuilder.AppendLine("}");
-            promptBuilder.AppendLine("```");
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine("Notes on the new fields:");
-            promptBuilder.AppendLine("- `taskUid` should be a stable slug for cross-scan identity. Use the form `hrt-ai:short-slug`.");
-            promptBuilder.AppendLine("- `previousId` is only meaningful on a re-scan and should be omitted on the first scan or when the recommendation is genuinely new.");
-            promptBuilder.AppendLine("- `resolvedFromPrior` is only meaningful on a re-scan. Empty array on the first scan.");
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine("Please analyze the user's Unity project and provide hand-tracking adaptation suggestions.");
-            promptBuilder.AppendLine("Search through the project's scripts to understand the codebase, then provide your suggestions in the JSON format above.");
+            if (includeJsonResponseFormat)
+            {
+                // Add Unity-specific JSON response format requirement
+                // (This is NOT in SKILL.md because Claude Code users get conversational output)
+                promptBuilder.AppendLine("---");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("# Response Format (Unity Tool)");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("You are being called from a Unity Editor tool. Your response MUST end with a JSON block wrapped in ```json and ``` markers.");
+                promptBuilder.AppendLine("You may include natural language analysis BEFORE the JSON block.");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("```json");
+                promptBuilder.AppendLine("{");
+                promptBuilder.AppendLine("  \"analysisComplete\": true,");
+                promptBuilder.AppendLine("  \"projectType\": \"string describing the type of game/experience\",");
+                promptBuilder.AppendLine("  \"suggestions\": [");
+                promptBuilder.AppendLine("    {");
+                promptBuilder.AppendLine("      \"taskUid\": \"hrt-ai:short-stable-slug\",");
+                promptBuilder.AppendLine("      \"previousId\": \"hrt-ai:matching-prior-id-or-omit\",");
+                promptBuilder.AppendLine("      \"title\": \"Short title (max 60 chars)\",");
+                promptBuilder.AppendLine("      \"description\": \"What was found and what should change\",");
+                promptBuilder.AppendLine("      \"currentImplementation\": \"What you found in their code\",");
+                promptBuilder.AppendLine("      \"handTrackingAdaptation\": \"How to enhance with hand tracking\",");
+                promptBuilder.AppendLine("      \"implementationSteps\": [\"Step 1\", \"Step 2\"],");
+                promptBuilder.AppendLine("      \"complexity\": \"Low|Medium|High\",");
+                promptBuilder.AppendLine("      \"priority\": \"High|Medium|Low\"");
+                promptBuilder.AppendLine("    }");
+                promptBuilder.AppendLine("  ],");
+                promptBuilder.AppendLine("  \"resolvedFromPrior\": [\"hrt-ai:prior-id-1\", \"hrt-ai:prior-id-2\"]");
+                promptBuilder.AppendLine("}");
+                promptBuilder.AppendLine("```");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("Notes on the new fields:");
+                promptBuilder.AppendLine("- `taskUid` should be a stable slug for cross-scan identity. Use the form `hrt-ai:short-slug`.");
+                promptBuilder.AppendLine("- `previousId` is only meaningful on a re-scan and should be omitted on the first scan or when the recommendation is genuinely new.");
+                promptBuilder.AppendLine("- `resolvedFromPrior` is only meaningful on a re-scan. Empty array on the first scan.");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("Please analyze the user's Unity project and provide hand-tracking adaptation suggestions.");
+                promptBuilder.AppendLine("Search through the project's scripts to understand the codebase, then provide your suggestions in the JSON format above.");
+            }
+            else
+            {
+                promptBuilder.AppendLine("---");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("# Analyze This Project");
+                promptBuilder.AppendLine();
+                promptBuilder.AppendLine("Please analyze your Unity project and provide hand-tracking adaptation suggestions.");
+                promptBuilder.AppendLine("Search through the project's scripts to understand the codebase, then share prioritized recommendations — for each finding, note what to change, why it matters, and the implementation steps.");
+            }
 
             return promptBuilder.ToString();
         }

@@ -126,6 +126,8 @@ namespace Meta.XR.Editor
                 platform: BuildTargetGroup.Standalone,
                 conditionalValidity: buildTargetGroup =>
                 {
+                    if (!ShouldValidate())
+                        return false;
                     var settings = OpenXRSettings.GetSettingsForBuildTargetGroup(buildTargetGroup);
                     return settings != null;
                 },
@@ -163,6 +165,8 @@ namespace Meta.XR.Editor
                 platform: BuildTargetGroup.Standalone,
                 conditionalValidity: buildTargetGroup =>
                 {
+                    if (!ShouldValidate())
+                        return false;
                     var settings = OpenXRSettings.GetSettingsForBuildTargetGroup(buildTargetGroup);
                     var feature = settings?.GetFeature<ApiLayersFeature>();
                     return feature != null && feature.enabled;
@@ -240,7 +244,8 @@ namespace Meta.XR.Editor
                 level: OVRProjectSetup.TaskLevel.Recommended,
                 group: OVRProjectSetup.TaskGroup.Packages,
                 platform: BuildTargetGroup.Standalone,
-                conditionalValidity: _ => PackageList.PackageManagerListAvailable
+                conditionalValidity: _ => MetaXROperatorActivator.AreBinariesPresent()
+                    && PackageList.PackageManagerListAvailable
                     && PackageList.IsPackageInstalled(openXRPackageName),
                 isDone: _ => false,
                 message: $"Meta XR Operator requires OpenXR Plugin version {minVersion} or newer. " +

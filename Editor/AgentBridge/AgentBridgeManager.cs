@@ -65,6 +65,7 @@ namespace Meta.XR.AI.AgentBridge
             AgentBridgeCoreService.ClearErrorDelegate = ClearError;
             AgentBridgeCoreService.GetSessionIdDelegate = GetSessionId;
             AgentBridgeCoreService.GetSessionIdForCallerDelegate = GetSessionIdForCaller;
+            AgentBridgeCoreService.GetUsageForCallerDelegate = GetUsageForCaller;
             AgentBridgeCoreService.GetResumeCommandForCallerDelegate = GetResumeCommandForCaller;
             AgentBridgeCoreService.OpenTerminalWithCommandDelegate = AIServiceBase.OpenTerminalWithCommand;
 
@@ -348,6 +349,14 @@ namespace Meta.XR.AI.AgentBridge
         public static string GetSessionIdForCaller(CallerIdentity? caller)
         {
             return ConversationManager.GetSessionIdForCaller(caller);
+        }
+
+        /// <summary>
+        /// Get the cumulative token/cost usage for a specific caller's conversation.
+        /// </summary>
+        public static UsageTotals GetUsageForCaller(CallerIdentity? caller)
+        {
+            return ConversationManager.GetUsageForCaller(caller);
         }
 
         /// <summary>

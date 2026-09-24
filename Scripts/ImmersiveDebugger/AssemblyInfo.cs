@@ -23,7 +23,6 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("Meta.XR.ImmersiveDebugger.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.ImmersiveDebugger.DevAgent")]
-[assembly: InternalsVisibleTo("Meta.XR.ImmersiveDebugger.DevAgent.Tools")]
 [assembly: InternalsVisibleTo("meta.xr.ai.mcpbridge.editor")]
 [assembly: InternalsVisibleTo("meta.xr.mrutilitykit")]
 [assembly: InternalsVisibleTo("meta.xr.mrutilitykit.editor")]

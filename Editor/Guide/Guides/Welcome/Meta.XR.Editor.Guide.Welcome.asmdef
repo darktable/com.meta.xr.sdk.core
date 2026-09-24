@@ -8,6 +8,9 @@
         "Meta.XR.Editor.StatusMenu",
         "Meta.XR.Editor.ToolingSupport",
         "MetaXRSimulatorCore.Editor",
+        "Meta.XR.Editor.RemoteContent",
+        "Meta.XR.Guides.Editor",
+        "Oculus.VR",
         "Oculus.VR.Editor"
     ],
     "includePlatforms": [

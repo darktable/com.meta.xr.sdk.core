@@ -63,6 +63,14 @@ namespace Meta.XR.AI.AgentBridge
         internal static event Action? Deactivated;
 
         /// <summary>
+        /// Raised whenever <see cref="SelectedServiceId"/> changes through
+        /// <see cref="SetSelectedService"/>, carrying the new service id. Lets surfaces that cache
+        /// the selection (e.g. the AI Tools Setup panel) stay in sync with the Preferences popup
+        /// without polling. Mirrors the <see cref="Activated"/>/<see cref="Deactivated"/> pattern.
+        /// </summary>
+        internal static event Action<string>? SelectedServiceChanged;
+
+        /// <summary>
         /// Global toggle for AI Agent Bridge. When disabled (the default), no HTTP servers are started,
         /// no assembly scanning occurs, and no background services run. All code remains compiled
         /// and present, but expensive operations stay dormant until the user explicitly opts in.
@@ -99,6 +107,23 @@ namespace Meta.XR.AI.AgentBridge
             Tooltip = "The AI service to use for Agent Bridge operations.",
             SendTelemetry = true
         };
+
+        /// <summary>
+        /// Single entry point for changing the selected service. Writes the setting and raises
+        /// <see cref="SelectedServiceChanged"/> so every surface reflects the change. No-op when the
+        /// value is unchanged. UI refresh is left to subscribers (deferred to the main thread) so this
+        /// stays safe to call from any origin.
+        /// </summary>
+        internal static void SetSelectedService(string serviceId, Origins origin)
+        {
+            if (SelectedServiceId.Value == serviceId)
+            {
+                return;
+            }
+
+            SelectedServiceId.SetValue(serviceId, origin, Owner);
+            SelectedServiceChanged?.Invoke(serviceId);
+        }
 
         /// <summary>
         /// Enable verbose logging for debugging purposes.
@@ -167,8 +192,6 @@ namespace Meta.XR.AI.AgentBridge
                 _hasValidatedOnOpen = false;
             }
 
-            EditorGUILayout.Space();
-
             // Sync the active service to the selected setting before showing its settings.
             // EnsureServiceInitialized() re-syncs whenever SelectedServiceId changed by any means —
             // including the AI Tools Setup panel, which updates the setting without going through the
@@ -181,6 +204,10 @@ namespace Meta.XR.AI.AgentBridge
                 AgentBridgeManager.EnsureServiceInitialized();
                 service = AgentBridgeManager.GetCurrentService();
             }
+
+            EditorGUILayout.Space();
+            DrawCommandLineArguments(service);
+            EditorGUILayout.Space();
 
             DrawValidationSection(service, serviceTypeChanged);
             EditorGUILayout.Space();
@@ -202,6 +229,37 @@ namespace Meta.XR.AI.AgentBridge
             }
 
             EditorGUI.EndDisabledGroup();
+        }
+
+        private static void DrawCommandLineArguments(IAIService? service)
+        {
+            if (service is not IServiceCommandLineArguments commandLineService)
+            {
+                return;
+            }
+
+            var content = new GUIContent(
+                "Additional Arguments",
+                "Arguments appended to this service's CLI command. Committing a change validates " +
+                "the provider's complete launch command.");
+            var arguments = EditorGUILayout.DelayedTextField(
+                content,
+                commandLineService.AdditionalCommandLineArguments);
+
+            if (arguments == commandLineService.AdditionalCommandLineArguments)
+            {
+                return;
+            }
+
+            commandLineService.AdditionalCommandLineArguments = arguments;
+            if (service is IServiceCommandLineArgumentsValidation argumentsValidation)
+            {
+                TriggerCommandLineArgumentsValidation(argumentsValidation);
+            }
+            else if (service is IServiceValidation validationService)
+            {
+                TriggerValidation(validationService);
+            }
         }
 
         private static void DrawAdvancedContent(Origins origin, IAIService? service)
@@ -228,7 +286,12 @@ namespace Meta.XR.AI.AgentBridge
 
         internal static void ResetToDefaults()
         {
+            var previousServiceId = SelectedServiceId.Value;
             SelectedServiceId.Reset();
+            if (SelectedServiceId.Value != previousServiceId)
+            {
+                SelectedServiceChanged?.Invoke(SelectedServiceId.Value);
+            }
             VerboseLogging.Reset();
             RemoteAgentSettings.ResetToDefaults();
 
@@ -339,7 +402,7 @@ namespace Meta.XR.AI.AgentBridge
             if (currentIndex < 0)
             {
                 currentIndex = 0;
-                SelectedServiceId.SetValue(availableServices[0].Id, Origins.UserSettings, Owner);
+                SetSelectedService(availableServices[0].Id, Origins.UserSettings);
             }
 
             // Create display names array
@@ -353,7 +416,7 @@ namespace Meta.XR.AI.AgentBridge
             // Update selection if changed
             if (newIndex != currentIndex && newIndex >= 0 && newIndex < availableServices.Length)
             {
-                SelectedServiceId.SetValue(availableServices[newIndex].Id, Origins.UserSettings, Owner);
+                SetSelectedService(availableServices[newIndex].Id, Origins.UserSettings);
             }
         }
 
@@ -437,6 +500,20 @@ namespace Meta.XR.AI.AgentBridge
             catch (Exception ex)
             {
                 Debug.LogWarning($"[AgentBridge] Validation failed: {ex.Message}");
+            }
+        }
+
+        private static async void TriggerCommandLineArgumentsValidation(
+            IServiceCommandLineArgumentsValidation validationService)
+        {
+            try
+            {
+                await validationService.ValidateCommandLineArgumentsAsync();
+                EditorApplication.delayCall += UnityEditorInternal.InternalEditorUtility.RepaintAllViews;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AgentBridge] Command-line argument validation failed: {ex.Message}");
             }
         }
 

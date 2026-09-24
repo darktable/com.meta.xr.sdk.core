@@ -582,7 +582,8 @@ internal class OVRProjectSetupDrawer
         List<OVRConfigurationTask>> filter, BuildTargetGroup buildTargetGroup, string title, bool fixAllButton)
     {
         var tasks = filter(OVRProjectSetup.GetTasks(buildTargetGroup).Where(
-            task => _selectedTaskGroup == OVRProjectSetup.TaskGroup.All || task.Group == _selectedTaskGroup));
+            task => (_selectedTaskGroup == OVRProjectSetup.TaskGroup.All || task.Group == _selectedTaskGroup)
+                    && OVRProjectSetup.IsTaskVisibleInProjectSetupTool(task)));
 
         if (key == null || tasks == null || tasks.Count == 0)
         {

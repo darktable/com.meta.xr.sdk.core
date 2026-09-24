@@ -126,14 +126,14 @@ partial class OculusBuildApp : EditorWindow
 
     static bool? apkOutputSuccessful;
 
-    [MenuItem("Meta/Tools/OVR Build/OVR Build APK... %#k", false, 90000)]
+    [MenuItem("Window/Meta/Tools/OVR Build/OVR Build APK... %#k", false, 90000)]
     static void Init()
     {
         EditorWindow.GetWindow<OculusBuildApp>(false, "OVR Build APK", true);
         OnBuildComplete();
     }
 
-    [MenuItem("Meta/Tools/OVR Build/OVR Build APK And Run %k", false, 90001)]
+    [MenuItem("Window/Meta/Tools/OVR Build/OVR Build APK And Run %k", false, 90001)]
     static void InitAndRun()
     {
         var window = EditorWindow.GetWindow<OculusBuildApp>(false, "OVR Build APK", true);

@@ -202,7 +202,7 @@ namespace Meta.XR.Editor.ToolingSupport
 
             if (!IsRampedUp) return;
 
-            Utils.AddMenuItem(MenuPath, () => OnClickDelegate(Origins.Menu), MenuPathShortcut, Order);
+            Utils.AddMenuItem(MenuPath, () => OnClickDelegate(Origins.Menu), MenuPathShortcut, Utils.MetaMenuBasePriority + Order);
         }
 
         private Vector2 _headerSize = Vector2.zero;

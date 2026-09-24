@@ -40,7 +40,7 @@ namespace Meta.XR.AI.AgentBridge
     /// keeping the subprocess alive across prompts within a session.
     /// </summary>
     [RegisterAIService(ServiceId, "Gemini CLI", Priority = 20, ExecutableName = "gemini", SkillsSubPath = ".gemini/skills")]
-    public class GeminiCliService : AIServiceBase, IServiceSettingsUI, IServiceValidation, IAIServiceSessionResume
+    public class GeminiCliService : AIServiceBase, IServiceSettingsUI, IServiceValidation, IAIServiceSessionResume, IServiceCommandLineArguments, IServiceCommandLineArgumentsValidation
     {
         /// <summary>
         /// The unique service identifier for Gemini CLI.
@@ -64,6 +64,16 @@ namespace Meta.XR.AI.AgentBridge
                 SendTelemetry = false
             };
 
+            internal static readonly UserString AdditionalArguments = new UserString
+            {
+                Uid = nameof(AdditionalArguments),
+                Owner = Owner,
+                Default = "",
+                Label = "Additional Arguments",
+                Tooltip = "Arguments appended to the Gemini CLI command.",
+                SendTelemetry = false
+            };
+
             private class GeminiCliDescriptor : IIdentified
             {
                 public string Id => "AgentBridge.GeminiCli";
@@ -75,7 +85,14 @@ namespace Meta.XR.AI.AgentBridge
         private string? _sessionId;
         private bool _isFirstPromptInSession = true;
         private bool _disposed;
+        private int _restartAcpClientOnNextPrompt;
         private ValidationResult _currentValidationResult = ValidationResult.Unknown();
+        private readonly SemaphoreSlim _validationSemaphore = new(1, 1);
+        // Caller of the in-flight prompt. ACP usage_updates arrive on a background
+        // event with no caller, so we stash it here to attribute usage correctly.
+        // volatile: written on the calling thread but read on the ACP receive-loop
+        // background thread in HandleSessionUpdate, so we need cross-thread visibility.
+        private volatile CallerIdentity? _currentCaller;
 
         /// <inheritdoc/>
         public override string ServiceName => "Gemini CLI";
@@ -84,7 +101,28 @@ namespace Meta.XR.AI.AgentBridge
         public override bool HasActiveSession => !string.IsNullOrEmpty(_sessionId);
 
         /// <inheritdoc />
-        public ValidationResult CurrentValidationResult => _currentValidationResult;
+        public ValidationResult CurrentValidationResult => CommandLineArguments.ResolveValidationResult(
+            ServiceId,
+            GeminiCliSettings.ExecutablePath.Value,
+            AdditionalCommandLineArguments,
+            _currentValidationResult);
+
+        /// <inheritdoc />
+        public string AdditionalCommandLineArguments
+        {
+            get => GeminiCliSettings.AdditionalArguments.Value;
+            set
+            {
+                if (value == GeminiCliSettings.AdditionalArguments.Value)
+                {
+                    return;
+                }
+
+                GeminiCliSettings.AdditionalArguments.SetValue(value);
+                _currentValidationResult = ValidationResult.Unknown();
+                ScheduleAcpClientRestart();
+            }
+        }
 
         /// <inheritdoc />
         public bool CanResumeSession => !string.IsNullOrEmpty(_sessionId);
@@ -102,7 +140,13 @@ namespace Meta.XR.AI.AgentBridge
             await _executionSemaphore.WaitAsync(cancellationToken);
             try
             {
+                if (Interlocked.Exchange(ref _restartAcpClientOnNextPrompt, 0) == 1)
+                {
+                    RestartAcpClient();
+                }
+
                 Log.Info($"Processing user input through Gemini CLI: {userInput}");
+                _currentCaller = caller;
                 if (images != null && images.Count > 0)
                 {
                     Log.Info($"Processing with {images.Count} image(s)");
@@ -112,7 +156,7 @@ namespace Meta.XR.AI.AgentBridge
                 ConversationManager.ClearError();
 
                 // Add the user's input to the conversation history
-                ConversationManager.AddMessage("user", userInput);
+                ConversationManager.AddMessage("user", userInput, caller: _currentCaller);
 
                 // Ensure ACP client is connected and session exists
                 await EnsureAcpClientAsync();
@@ -166,6 +210,9 @@ namespace Meta.XR.AI.AgentBridge
             }
             finally
             {
+                // Clear so a late ACP event (e.g. a usage_update arriving after this prompt
+                // returns) isn't misattributed to this caller on the next turn.
+                _currentCaller = null;
                 ConversationManager.IsActive = false;
                 _executionSemaphore.Release();
             }
@@ -178,6 +225,13 @@ namespace Meta.XR.AI.AgentBridge
         {
             Log.Info("Clearing Gemini CLI session");
 
+            Interlocked.Exchange(ref _restartAcpClientOnNextPrompt, 0);
+            RestartAcpClient();
+            ConversationManager.Clear();
+        }
+
+        private void RestartAcpClient()
+        {
             if (_acpClient != null)
             {
                 _acpClient.OnSessionUpdate -= HandleSessionUpdate;
@@ -186,8 +240,11 @@ namespace Meta.XR.AI.AgentBridge
             _acpClient = null;
             _sessionId = null;
             _isFirstPromptInSession = true;
+        }
 
-            ConversationManager.Clear();
+        private void ScheduleAcpClientRestart()
+        {
+            Interlocked.Exchange(ref _restartAcpClientOnNextPrompt, 1);
         }
 
         /// <summary>
@@ -195,7 +252,12 @@ namespace Meta.XR.AI.AgentBridge
         /// </summary>
         public override async Task CancelCurrentOperationAsync()
         {
-            if (_acpClient == null || _sessionId == null)
+            // Capture the client/session we're cancelling. While we await below, a new scan
+            // (e.g. the user navigates Back then Next mid-scan) can replace _acpClient; guarding
+            // on this reference keeps us from disposing a client a later scan created. (T280100936)
+            var client = _acpClient;
+            var sessionId = _sessionId;
+            if (client == null || sessionId == null)
             {
                 return;
             }
@@ -203,7 +265,7 @@ namespace Meta.XR.AI.AgentBridge
             try
             {
                 Log.Info("Cancelling Gemini CLI operation");
-                _acpClient.Cancel(_sessionId);
+                client.Cancel(sessionId);
 
                 // Give a moment for the cancel to take effect
                 await Task.Delay(500);
@@ -213,27 +275,32 @@ namespace Meta.XR.AI.AgentBridge
                 Log.Warning($"Error sending cancel notification: {ex.Message}");
             }
 
-            // If the process already stopped after cancel, clean up state
-            if (_acpClient == null || !_acpClient.IsRunning)
-            {
-                _acpClient = null;
-                _sessionId = null;
-                _isFirstPromptInSession = true;
-                return;
-            }
-
-            // Force kill if still running after brief wait
+            // Dispose the client we cancelled (cleanup), but only clear the shared fields if a
+            // new scan hasn't already swapped in its own client while we awaited — otherwise we'd
+            // strand the returning scan's session, which is the T280100936 failure.
             try
             {
-                _acpClient.Dispose();
+                if (client.IsRunning)
+                {
+                    client.Dispose();
+                }
             }
             catch (Exception ex)
             {
                 Log.Warning($"Error disposing ACP client during cancel: {ex.Message}");
             }
-            _acpClient = null;
-            _sessionId = null;
-            _isFirstPromptInSession = true;
+
+            // Guard the unsubscribe: if it threw, it would bypass the ReferenceEquals
+            // state-clearing block below and leave the shared fields dangling.
+            try { client.OnSessionUpdate -= HandleSessionUpdate; }
+            catch (Exception ex) { Log.Warning($"Error unsubscribing from ACP client during cancel: {ex.Message}"); }
+
+            if (ReferenceEquals(_acpClient, client))
+            {
+                _acpClient = null;
+                _sessionId = null;
+                _isFirstPromptInSession = true;
+            }
         }
 
         /// <summary>
@@ -259,7 +326,19 @@ namespace Meta.XR.AI.AgentBridge
 
             var geminiExecutable = GetGeminiExecutable();
 
-            _acpClient = new AcpClient(geminiExecutable, GetLoginShellPath(), "--experimental-acp");
+            if (!CommandLineArguments.TryParse(
+                    AdditionalCommandLineArguments,
+                    out var additionalArguments,
+                    out var argumentError))
+            {
+                throw new InvalidOperationException($"Invalid additional arguments: {argumentError}");
+            }
+
+            _acpClient = new AcpClient(
+                geminiExecutable,
+                GetLoginShellPath(),
+                "--experimental-acp",
+                additionalArguments);
             _acpClient.OnSessionUpdate += HandleSessionUpdate;
 
             Log.Info("Initializing ACP connection to Gemini CLI");
@@ -270,9 +349,13 @@ namespace Meta.XR.AI.AgentBridge
             _sessionId = session.SessionId;
             _isFirstPromptInSession = true;
 
+            var sessionCaller = _currentCaller;
             MainThreadDispatcher.ExecuteOnMainThread(() =>
             {
                 ConversationManager.SetSessionId(_sessionId);
+                // Also record per-caller so the results screen's resume banner
+                // (which reads GetSessionIdForCaller) can offer a resume command.
+                ConversationManager.SetSessionIdForCaller(sessionCaller, _sessionId);
                 Log.Info($"Gemini CLI session created: {_sessionId}");
             });
         }
@@ -292,7 +375,18 @@ namespace Meta.XR.AI.AgentBridge
                     return;
                 }
 
+                // Snapshot the caller once so this event's usage and message are attributed
+                // to a consistent caller even if the field changes mid-handler.
+                var caller = _currentCaller;
+
                 var conversationInfo = AcpParser.GetConversationContentFromAcp(update);
+                if (conversationInfo?.Usage != null)
+                {
+                    var u = conversationInfo.Usage;
+                    ConversationManager.AddUsageForCaller(
+                        caller, u.InputTokens, u.OutputTokens,
+                        u.CacheReadTokens, u.CacheCreationTokens, u.CostUsd);
+                }
                 if (conversationInfo == null || !conversationInfo.HasContent)
                 {
                     return;
@@ -307,6 +401,7 @@ namespace Meta.XR.AI.AgentBridge
                     Method = conversationInfo.Method ?? string.Empty,
                     Target = conversationInfo.Target ?? string.Empty,
                     Rationale = conversationInfo.Rationale ?? string.Empty,
+                    CallerId = caller?.Id ?? string.Empty,
                     Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     IsStreaming = conversationInfo.IsStreaming,
                     IsDelta = conversationInfo.IsDelta
@@ -348,6 +443,7 @@ namespace Meta.XR.AI.AgentBridge
             if (disposing)
             {
                 _executionSemaphore?.Dispose();
+                _validationSemaphore.Dispose();
 
                 if (_acpClient != null)
                 {
@@ -380,7 +476,7 @@ namespace Meta.XR.AI.AgentBridge
         public void DrawSettingsUI(Origins origins, IIdentified originData)
         {
             UnityEditor.EditorGUILayout.LabelField("Gemini CLI Settings", UnityEditor.EditorStyles.boldLabel);
-            GeminiCliSettings.ExecutablePath.DrawForGUI(origins, originData);
+            GeminiCliSettings.ExecutablePath.DrawForGUI(origins, originData, OnExecutablePathChanged);
         }
 
         /// <summary>
@@ -388,8 +484,29 @@ namespace Meta.XR.AI.AgentBridge
         /// </summary>
         public void ResetSettingsToDefaults()
         {
+            var launchConfigurationChanged =
+                !string.IsNullOrEmpty(GeminiCliSettings.ExecutablePath.Value) ||
+                !string.IsNullOrEmpty(AdditionalCommandLineArguments);
             GeminiCliSettings.ExecutablePath.Reset();
+            GeminiCliSettings.AdditionalArguments.Reset();
+            InvalidateLaunchConfiguration();
+            if (launchConfigurationChanged)
+            {
+                ScheduleAcpClientRestart();
+            }
+        }
+
+        private void OnExecutablePathChanged()
+        {
+            InvalidateLaunchConfiguration();
+            ScheduleAcpClientRestart();
+        }
+
+        private void InvalidateLaunchConfiguration()
+        {
             ClearResolvedExecutablePath();
+            _currentValidationResult = ValidationResult.Unknown();
+            CommandLineArguments.InvalidateValidationResult(ServiceId);
         }
 
         #endregion
@@ -397,19 +514,59 @@ namespace Meta.XR.AI.AgentBridge
         #region IServiceValidation Implementation
 
         /// <inheritdoc />
-        public async Task<ValidationResult> ValidateConfigurationAsync()
+        public Task<ValidationResult> ValidateConfigurationAsync()
         {
-            _currentValidationResult = ValidationResult.Validating();
+            return ValidateConfigurationAsync(false);
+        }
 
+        /// <inheritdoc />
+        public async Task<ValidationResult> ValidateCommandLineArgumentsAsync()
+        {
+            var result = await ValidateConfigurationAsync(true);
+            return CommandLineArguments.RecordValidationResult(
+                ServiceId,
+                GeminiCliSettings.ExecutablePath.Value,
+                AdditionalCommandLineArguments,
+                result);
+        }
+
+        private async Task<ValidationResult> ValidateConfigurationAsync(bool validateCommandLineArguments)
+        {
+            if (!await _validationSemaphore.WaitAsync(CommandLineArguments.ValidationQueueTimeoutMilliseconds))
+            {
+                return CommandLineArguments.ValidationAlreadyInProgress();
+            }
             try
             {
+                _currentValidationResult = ValidationResult.Validating();
                 var geminiExecutable = GetGeminiExecutable();
+
+                if (!CommandLineArguments.TryParse(
+                        AdditionalCommandLineArguments,
+                        out var additionalArguments,
+                        out var argumentError))
+                {
+                    _currentValidationResult = ValidationResult.Invalid(argumentError);
+                    return _currentValidationResult;
+                }
 
                 // Check if the executable exists (if a specific path is provided)
                 var configuredPath = GeminiCliSettings.ExecutablePath.Value;
                 if (!string.IsNullOrEmpty(configuredPath) && !File.Exists(configuredPath))
                 {
                     _currentValidationResult = ValidationResult.Invalid($"Executable not found: {configuredPath}");
+                    return _currentValidationResult;
+                }
+
+                if (validateCommandLineArguments && additionalArguments.Count > 0)
+                {
+                    _currentValidationResult = await CommandLineArguments.RunAcpSmokeTestAsync(
+                        geminiExecutable,
+                        GetLoginShellPath(),
+                        "--experimental-acp",
+                        additionalArguments,
+                        GetProjectPath(),
+                        "Gemini CLI");
                     return _currentValidationResult;
                 }
 
@@ -429,6 +586,7 @@ namespace Meta.XR.AI.AgentBridge
 
                 using var process = new Process { StartInfo = processStartInfo };
                 var outputBuilder = new StringBuilder();
+                var errorBuilder = new StringBuilder();
 
                 process.Start();
 
@@ -447,6 +605,11 @@ namespace Meta.XR.AI.AgentBridge
                         // Ignore read errors
                     }
                 });
+                var errorTask = Task.Run(() =>
+                {
+                    try { errorBuilder.Append(process.StandardError.ReadToEnd()); }
+                    catch { }
+                });
 
                 var waitTask = Task.Run(() =>
                 {
@@ -464,14 +627,13 @@ namespace Meta.XR.AI.AgentBridge
 
                 if (!completed)
                 {
-                    try { process.Kill(); }
-                    catch (InvalidOperationException) { }
+                    CommandLineArguments.KillProcessTree(process);
                     _currentValidationResult = ValidationResult.Error("Gemini CLI timed out");
                     return _currentValidationResult;
                 }
 
                 // Wait a short time for read task to complete after process exits
-                await Task.WhenAny(readTask, Task.Delay(500));
+                await Task.WhenAny(Task.WhenAll(readTask, errorTask), Task.Delay(500));
 
                 if (process.ExitCode == 0)
                 {
@@ -484,7 +646,9 @@ namespace Meta.XR.AI.AgentBridge
                 }
                 else
                 {
-                    _currentValidationResult = ValidationResult.Invalid("Gemini CLI not found or not configured");
+                    _currentValidationResult = ValidationResult.Invalid(CommandLineArguments.GetValidationError(
+                        errorBuilder.ToString(),
+                        "Gemini CLI not found or not configured"));
                 }
             }
             catch (System.ComponentModel.Win32Exception)
@@ -494,6 +658,10 @@ namespace Meta.XR.AI.AgentBridge
             catch (Exception ex)
             {
                 _currentValidationResult = ValidationResult.Error($"Validation error: {ex.Message}");
+            }
+            finally
+            {
+                _validationSemaphore.Release();
             }
 
             return _currentValidationResult;

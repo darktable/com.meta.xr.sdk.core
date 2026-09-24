@@ -49,5 +49,8 @@ namespace Meta.XR.Editor.Id
         BlockCollectionPage,
         BlockInspector,
         BlockInspectorModifiableProperty,
+
+        // Status Menu Windowed Version
+        StatusMenuWindow,
     }
 }

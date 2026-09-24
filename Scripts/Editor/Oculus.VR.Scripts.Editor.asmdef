@@ -11,7 +11,8 @@
         "Unity.XR.Management.Editor",
         "Unity.TextMeshPro",
         "Unity.RenderPipelines.Universal.Runtime",
-        "Meta.XR.ImmersiveDebugger"
+        "Meta.XR.ImmersiveDebugger",
+        "Meta.XR.FovSimulator"
     ],
     "includePlatforms": [
         "Editor"

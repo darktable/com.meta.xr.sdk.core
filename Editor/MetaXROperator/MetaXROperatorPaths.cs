@@ -32,7 +32,18 @@ namespace Meta.XR.Editor
         private const string CoreSdkPackagePath = "Packages/com.meta.xr.sdk.core";
         private const string AssetsEditorBasePath = "Assets/Oculus/VR/Editor";
         private const string OculusInternalMetaXROperatorSubdir = "OculusInternal/MetaXROperator";
+        private const string OculusPartnerMetaXROperatorSubdir = "OculusPartner/MetaXROperator";
         private const string LegacyMetaXROperatorSubdir = "MetaXROperator";
+        private const string ToolsSubdir = "Tools~";
+
+        // Layout candidates in priority order: internal/partner packages nest under
+        // OculusInternal/ or OculusPartner/; public and local dev use the legacy layout.
+        private static readonly string[] MetaXROperatorSubdirs =
+        {
+            OculusInternalMetaXROperatorSubdir,
+            OculusPartnerMetaXROperatorSubdir,
+            LegacyMetaXROperatorSubdir,
+        };
 
         internal static string GetPlatformLayerDir()
         {
@@ -48,15 +59,12 @@ namespace Meta.XR.Editor
 #endif
             foreach (var editorBase in EnumerateEditorBasePaths())
             {
-                // Prefer the OculusInternal layout that ships with the
-                // package cache; fall back to the legacy layout.
-                var internalDir = Path.Combine(editorBase, OculusInternalMetaXROperatorSubdir, platformSubdir);
-                if (Directory.Exists(internalDir))
-                    return internalDir;
-
-                var legacyDir = Path.Combine(editorBase, LegacyMetaXROperatorSubdir, platformSubdir);
-                if (Directory.Exists(legacyDir))
-                    return legacyDir;
+                foreach (var subdir in MetaXROperatorSubdirs)
+                {
+                    var dir = Path.Combine(editorBase, subdir, platformSubdir);
+                    if (Directory.Exists(dir))
+                        return dir;
+                }
             }
 
             // Nothing found on disk — return a plausible path for messaging.
@@ -93,6 +101,31 @@ namespace Meta.XR.Editor
         {
             var packageInfo = PackageInfo.FindForAssetPath(CoreSdkPackagePath);
             return packageInfo?.resolvedPath;
+        }
+
+        // Returns the path to the bundled MCP proxy binary for the given platform
+        // folder (e.g. "Windows") and file name, or null if not present.
+        // Uses the same OculusInternal-first resolution as GetPlatformLayerDir
+        internal static string GetProxyBinaryPath(string platformDir, string proxyName)
+        {
+            return ResolveProxyBinaryPath(EnumerateEditorBasePaths(), platformDir, proxyName);
+        }
+
+        // Testable core of GetProxyBinaryPath.
+        internal static string ResolveProxyBinaryPath(
+            IEnumerable<string> editorBasePaths, string platformDir, string proxyName)
+        {
+            foreach (var editorBase in editorBasePaths)
+            {
+                foreach (var subdir in MetaXROperatorSubdirs)
+                {
+                    var path = Path.Combine(editorBase, subdir, ToolsSubdir, platformDir, proxyName);
+                    if (File.Exists(path))
+                        return path;
+                }
+            }
+
+            return null;
         }
 
 #if UNITY_OPENXR_PLUGIN_1_17_0_OR_NEWER

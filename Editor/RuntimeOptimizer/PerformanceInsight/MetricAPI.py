@@ -536,6 +536,17 @@ class MetricAPI:
                 render_passes.append(len(passes_within_time))
 
         # print(frame_times)
+        if not frame_times:
+            json_result = {
+                "entries": 0,
+                "mean": 0.0,
+                "std": 0.0,
+                "max": 0.0,
+                "quantile_75": 0.0,
+                "render_passes_mean": 0.0,
+            }
+            return json_result
+
         json_result = {
             "entries": len(frame_times),
             "mean": (np.mean(frame_times) / 1000000).item(),
@@ -1069,8 +1080,13 @@ class MetricAPI:
         # key exist in different argument_df, so we need to drop the column before merge
         argument_df.drop("key", axis=1, inplace=True, errors="ignore")
 
-        # MetricAPI.write_to_log(argument_df["numberOfBins"], enable_logging=self.enable_logging, log_prefix=self.jsonName)
-        return pd.merge(src_df, argument_df, on="arg_set_id")
+        if argument_df.empty:
+            src_df[arg_name] = "0"
+            return src_df
+
+        return pd.merge(src_df, argument_df, on="arg_set_id", how="left").fillna(
+            {arg_name: "0"}
+        )
 
     def get_gpu_stage_trace(self):
         """
@@ -1136,12 +1152,24 @@ class MetricAPI:
             combined_df = self.combine_arg_as_column(combined_df, "width")
             combined_df = self.combine_arg_as_column(combined_df, "height")
             combined_df = self.combine_arg_as_column(combined_df, "MSAA")
-            avg_msaa = combined_df["MSAA"].astype(float).mean()
+
+            if combined_df.empty:
+                MetricAPI.write_to_log(
+                    "DataFrame empty after combining args, keeping empty DataFrames",
+                    enable_logging=self.enable_logging,
+                    log_prefix=self.jsonName,
+                )
+                return self.render_passes_df
+
+            msaa_values = pd.to_numeric(combined_df["MSAA"], errors="coerce")
+            avg_msaa = msaa_values.mean()
+            if pd.isna(avg_msaa):
+                avg_msaa = 0.0
 
             self.render_passes_df = combined_df[
                 ~(
-                    combined_df["processName"].str.contains("com.oculus.vr")
-                    | combined_df["processName"].str.contains("com.oculus.sh")
+                    combined_df["processName"].str.contains("com.oculus.vr", na=False)
+                    | combined_df["processName"].str.contains("com.oculus.sh", na=False)
                 )
             ]
 
@@ -1153,14 +1181,20 @@ class MetricAPI:
             # remove all 0 bit color AND 0 bit depth
             self.main_color_pass_df = combined_df[
                 ~(
-                    combined_df["name"].str.contains("0 bit color")
-                    | combined_df["name"].str.contains("0 bit depth")
-                    | (combined_df["renderMode"].str == "Direct")
-                    | combined_df["processName"].str.contains("com.oculus.vr")
-                    | combined_df["processName"].str.contains("com.oculus.sh")
-                    | (combined_df["width"].astype(float) < 1024.0)
-                    | (combined_df["height"].astype(float) < 1024.0)
-                    | (combined_df["MSAA"].astype(float) < avg_msaa)
+                    combined_df["name"].str.contains("0 bit color", na=False)
+                    | combined_df["name"].str.contains("0 bit depth", na=False)
+                    | (combined_df["renderMode"] == "Direct")
+                    | combined_df["processName"].str.contains("com.oculus.vr", na=False)
+                    | combined_df["processName"].str.contains("com.oculus.sh", na=False)
+                    | (
+                        pd.to_numeric(combined_df["width"], errors="coerce").fillna(0)
+                        < 1024.0
+                    )
+                    | (
+                        pd.to_numeric(combined_df["height"], errors="coerce").fillna(0)
+                        < 1024.0
+                    )
+                    | (msaa_values.fillna(0) < avg_msaa)
                 )
             ]
 

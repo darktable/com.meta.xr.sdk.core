@@ -709,7 +709,7 @@ internal class OVRConfigurationTask : IIdentified
 
         var validationRule = new Unity.XR.CoreUtils.Editor.BuildValidationRule
         {
-            IsRuleEnabled = () => Valid.GetValue(platform),
+            IsRuleEnabled = () => Valid.GetValue(platform) && OVRProjectSetup.IsTaskVisibleInProjectSetupTool(this),
             Category = Group.ToString(),
             Message = Message.GetValue(platform),
             CheckPredicate = () => IsDone(platform),

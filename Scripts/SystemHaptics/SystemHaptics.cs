@@ -211,7 +211,7 @@ public static class SystemHaptics
             }
             vibration.Transients = transientsList.ToArray();
 
-            // Provide default values for rendering range (see XR_EXTX1_haptic_parametric specs for details).
+            // Provide default values for rendering range (see XR_EXT_haptic_parametric specs for details).
             vibration.MinFrequencyHz = (float)OVRPlugin.HapticsConstants.ParametricHapticsUnspecifiedFrequency;
             vibration.MaxFrequencyHz = (float)OVRPlugin.HapticsConstants.ParametricHapticsUnspecifiedFrequency;
 

@@ -20,6 +20,9 @@
 
 using Meta.XR.AI.AgentBridge;
 using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace Meta.XR.ImmersiveDebugger.DevAgent
@@ -40,12 +43,39 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             "ImmersiveDebugger.DevAgent." + System.Guid.NewGuid().ToString("N");
 
         private const string DefaultSystemPrompt =
-            "You are a Unity VR debugging assistant running on Meta Quest. " +
-            "You help users inspect, debug, and understand their Unity VR scene.\n\n" +
-            "You have access to MCP tools for finding and inspecting GameObjects, " +
-            "reading diagnostics, drawing debug visualizations, and more. " +
-            "Use the tools/list to see available tools, and ToolHelp.GetToolHelp() " +
-            "to learn how to use a specific tool.";
+            "You are a Unity VR debugging assistant running inside the user's app on a Meta Quest " +
+            "headset. You inspect, debug, visualize, and modify the user's live Unity scene. Prefer the " +
+            "Meta XR Operator runtime tools for interacting with the running scene; other tools the user " +
+            "has connected may also be used when they fit the request better.\n\n" +
+            "Discovering tools: at first only a few CORE tools plus the meta-tool 'unity_load_tools' are " +
+            "registered. Every other tool lives in a group you must load before you can call it. So when " +
+            "a request needs a capability you do not yet have a tool for, do not say it is impossible - " +
+            "instead:\n" +
+            "1. Call 'unity_load_tools' with action 'list' to see all groups, what each does, and which " +
+            "are loaded.\n" +
+            "2. Call 'unity_load_tools' with action 'load' and the group id to register that group's tools.\n" +
+            "3. Call the now-available tool. Treat the 'list' output as the source of truth for what exists.\n\n" +
+            "Match the user's intent to a group id (verify against the list; ids may change):\n" +
+            "- Find, inspect, or read a GameObject, component value, scene hierarchy, or health - CORE " +
+            "(already loaded).\n" +
+            "- 'Show me / where is / locate / highlight' an object - load 'visualization' and draw a " +
+            "bounding box; prefer a visible highlight over only stating coordinates.\n" +
+            "- Enable, show, or hide the Immersive Debugger panel, inspector, console, gizmos, opacity, " +
+            "or head-follow - load 'debugger_ui'.\n" +
+            "- Change a value, toggle a GameObject active, add or remove a component, or invoke a method " +
+            "- load 'scene_mutation'.\n" +
+            "- Read logs, errors, or warnings, or write a debug log - load 'diagnostics'.\n" +
+            "- Find objects by component type, or find [DebugMember]-annotated members - load 'discovery'.\n\n" +
+            "Prefer taking the action (load the right group, then call the tool) over describing what you " +
+            "would do. When the user asks to see, show, find, or locate something in the scene, give " +
+            "visual feedback - a bounding box or the debugger panel - alongside any text answer. Load a " +
+            "group only when you need it; do not preload everything.";
+
+        private const string AdbReverseServerAddress = "127.0.0.1";
+        private static readonly TimeSpan PreferredConnectionTimeout = TimeSpan.FromSeconds(1.5);
+        private static readonly TimeSpan FallbackConnectionTimeout = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan ConnectRetryBaseDelay = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan ConnectRetryMaxDelay = TimeSpan.FromSeconds(30);
 
         private ConversationManager _manager;
         internal ConversationManager ConversationManager => _manager;
@@ -53,11 +83,11 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         private IRemoteAgentBridgeClient _client;
         internal IRemoteAgentBridgeClient Client => _client;
 
-#if HAS_META_VOICE_SDK
-        private DictationController _dictationController;
-        private VoiceSetupController _voiceSetupController;
+        private IDictationSource _dictationSource;
         private PushToTalkController _pushToTalkController;
         private bool _isLiveTranscriptionActive;
+#if HAS_META_VOICE_SDK
+        private VoiceSetupController _voiceSetupController;
 #endif
 
         // Thinking stream state - tracks current streaming entry by MessageId
@@ -68,6 +98,8 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         // When true, the next reconnect or prompt must send a clear before proceeding.
         // Set when the user clears the conversation while the client is disconnected.
         internal bool _pendingClear;
+
+        private CancellationTokenSource _autoConnectCts;
 
         #region Initialization
 
@@ -95,21 +127,41 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
 
         private void Awake()
         {
-#if HAS_META_VOICE_SDK
-            _dictationController = FindFirstObjectByType<DictationController>();
+            // Voice backend selection. Default is on-device System Intelligence ASR (Quest 3/3S);
+            // the Voice SDK backend is used only when the user opts into it in settings. Either way
+            // the panel still works via keyboard text input when no voice backend is available.
+            var voiceSourceCreated = false;
 
+#if HAS_META_VOICE_SDK
+            // Cache the singleton once — reading RuntimeSettings.Instance in both the condition and
+            // the body would risk a NullReferenceException if it were nulled between the two reads.
             var settings = RuntimeSettings.Instance;
-            var witConfig = settings != null ? settings.WitConfiguration as Meta.WitAi.Data.Configuration.WitConfiguration : null;
-            var clientToken = settings != null ? settings.WitClientAccessToken : null;
-            _voiceSetupController = VoiceSetupController.CreateVoiceSetupAsChild(gameObject, witConfig, clientToken);
-            if (_voiceSetupController != null)
+            if (settings != null && settings.UseVoiceSdkForInput)
             {
-                _voiceSetupController.OnDictationControllerReady += OnDictationControllerReady;
+                var witConfig = settings.WitConfiguration as Meta.WitAi.Data.Configuration.WitConfiguration;
+                var clientToken = settings.WitClientAccessToken;
+                _voiceSetupController = VoiceSetupController.CreateVoiceSetupAsChild(gameObject, witConfig, clientToken);
+                if (_voiceSetupController != null)
+                {
+                    _voiceSetupController.OnDictationControllerReady += BindDictationSource;
+                    voiceSourceCreated = true;
+                }
             }
-#else
-            Debug.LogWarning("[AgentBridgeIntegration] Voice SDK (com.meta.xr.sdk.voice) is not installed. " +
-                "Voice input is disabled. Install the Voice SDK via Package Manager to enable push-to-talk.");
 #endif
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (!voiceSourceCreated && SiAsr.IsAvailable())
+            {
+                BindDictationSource(SiDictationController.CreateAsChild(gameObject));
+                voiceSourceCreated = true;
+            }
+#endif
+
+            if (!voiceSourceCreated)
+            {
+                Debug.Log("[AgentBridgeIntegration] No voice backend active; " +
+                    "use keyboard text input to talk to the assistant.");
+            }
         }
 
         private async void Start()
@@ -121,9 +173,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
                 _manager.OnConversationCancelled += OnConversationCancelled;
             }
 
-#if HAS_META_VOICE_SDK
             SetupPushToTalk();
-#endif
 
             // Create and connect the AgentBridge remote client (if not already injected)
             if (_client == null)
@@ -135,21 +185,15 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
                     return;
                 }
 
-                string serverAddress = settings.ServerAddress;
-                int serverPort = settings.ServerPort;
-                _client = new RemoteAgentBridgeClient(serverAddress, serverPort);
+                // Set initial status
+                _manager?.SetConnectionStatus(ConversationManager.ConnectionStatus.Disconnected);
 
-                // Set access token for authentication
-                if (!string.IsNullOrEmpty(settings.AccessToken))
-                {
-                    _client.AccessToken = settings.AccessToken;
-                }
+                await ConnectWithRetryAsync(settings);
+
+                return;
             }
-            _client.OnMessageReceived += OnMessageReceived;
-            _client.OnProcessingStateChanged += OnProcessingStateChanged;
-            _client.OnConversationCleared += OnRemoteConversationCleared;
-            _client.OnConnectionStateChanged += OnConnectionStateChanged;
-            _client.OnErrorReceived += OnErrorReceived;
+
+            SubscribeToClient(_client);
 
             // Set initial status
             _manager?.SetConnectionStatus(ConversationManager.ConnectionStatus.Disconnected);
@@ -164,24 +208,22 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
 
         private void OnDestroy()
         {
+            _autoConnectCts?.Cancel();
+            _autoConnectCts?.Dispose();
+            _autoConnectCts = null;
+
             if (_client != null)
             {
-                _client.OnMessageReceived -= OnMessageReceived;
-                _client.OnProcessingStateChanged -= OnProcessingStateChanged;
-                _client.OnConversationCleared -= OnRemoteConversationCleared;
-                _client.OnConnectionStateChanged -= OnConnectionStateChanged;
-                _client.OnErrorReceived -= OnErrorReceived;
+                UnsubscribeFromClient(_client);
                 _client.Dispose();
                 _client = null;
             }
 
-#if HAS_META_VOICE_SDK
             if (_pushToTalkController != null)
             {
                 _pushToTalkController.OnButtonPressed -= OnInputButtonPressed;
                 _pushToTalkController.OnButtonReleased -= OnInputButtonReleased;
             }
-#endif
 
             if (_manager != null)
             {
@@ -189,31 +231,29 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
                 _manager.OnConversationCancelled -= OnConversationCancelled;
             }
 
-#if HAS_META_VOICE_SDK
-            if (_dictationController != null)
+            if (_dictationSource != null)
             {
-                _dictationController.OnPartialTranscriptionUpdate -= OnPartialTranscriptionUpdate;
-                _dictationController.OnTranscriptionFinalized -= OnTranscriptionFinalized;
-                _dictationController.OnDictationError -= HandleDictationError;
+                _dictationSource.OnPartialTranscriptionUpdate -= OnPartialTranscriptionUpdate;
+                _dictationSource.OnTranscriptionFinalized -= OnTranscriptionFinalized;
+                _dictationSource.OnDictationError -= HandleDictationError;
             }
 
+#if HAS_META_VOICE_SDK
             if (_voiceSetupController != null)
             {
-                _voiceSetupController.OnDictationControllerReady -= OnDictationControllerReady;
+                _voiceSetupController.OnDictationControllerReady -= BindDictationSource;
             }
 #endif
         }
 
         internal void OnApplicationPause(bool pauseStatus)
         {
-#if HAS_META_VOICE_SDK
             if (pauseStatus)
             {
                 // Headset doffed mid-dictation — abandon the session so it doesn't stay stuck active
                 // and a stale utterance isn't sent on resume. Done regardless of client state.
                 CancelActiveDictation();
             }
-#endif
 
             if (_client == null) return;
 
@@ -240,6 +280,190 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             {
                 Debug.LogWarning("[AgentBridgeIntegration] Failed to reconnect after resume");
             }
+        }
+
+        #endregion
+
+        #region Client Connection
+
+        private struct ConnectionEndpoint
+        {
+            public string Address;
+            public int Port;
+            public string Name;
+            public bool Preferred;
+        }
+
+        /// <summary>
+        /// Connect to the Remote Agent Server, retrying with exponential backoff until a connection
+        /// succeeds or this component is destroyed. Each round re-probes every endpoint, so a tunnel
+        /// or server that only comes up after the app started is still picked up.
+        /// </summary>
+        internal async Task ConnectWithRetryAsync(RuntimeSettings settings)
+        {
+            _autoConnectCts?.Cancel();
+            _autoConnectCts?.Dispose();
+            _autoConnectCts = new CancellationTokenSource();
+            var cancellationToken = _autoConnectCts.Token;
+
+            for (var attempt = 1; !cancellationToken.IsCancellationRequested; attempt++)
+            {
+                if (await ConnectWithFallbackAsync(settings))
+                {
+                    return;
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                if (attempt == 1)
+                {
+                    Debug.LogWarning("[AgentBridgeIntegration] Could not connect to Remote Agent Server. " +
+                                     $"Tried {DescribeConnectionEndpoints(settings)}. Retrying in the background.");
+                }
+
+                var delaySeconds = Math.Min(
+                    ConnectRetryBaseDelay.TotalSeconds * Math.Pow(2, attempt - 1),
+                    ConnectRetryMaxDelay.TotalSeconds);
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
+
+        private async Task<bool> ConnectWithFallbackAsync(RuntimeSettings settings)
+        {
+            foreach (var endpoint in GetConnectionEndpoints(settings))
+            {
+                var client = new RemoteAgentBridgeClient(endpoint.Address, endpoint.Port);
+                if (!string.IsNullOrEmpty(settings.AccessToken))
+                {
+                    client.AccessToken = settings.AccessToken;
+                }
+
+                _client = client;
+                SubscribeToClient(client);
+
+                Debug.Log($"[AgentBridgeIntegration] Connecting to Remote Agent Server via {endpoint.Name} " +
+                          $"at {endpoint.Address}:{endpoint.Port}");
+
+                var connected = false;
+                try
+                {
+                    using var timeout = new CancellationTokenSource(
+                        endpoint.Preferred ? PreferredConnectionTimeout : FallbackConnectionTimeout);
+                    connected = await client.ConnectAsync(timeout.Token);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[AgentBridgeIntegration] Connection attempt failed via {endpoint.Name}: {ex.Message}");
+                }
+
+                if (connected)
+                {
+                    return true;
+                }
+
+                // If OnDestroy tore this client down during the await, it is already unsubscribed and
+                // disposed — don't touch it again (double-dispose) and stop connecting.
+                if (!ReferenceEquals(_client, client))
+                {
+                    return false;
+                }
+
+                UnsubscribeFromClient(client);
+                client.Dispose();
+                _client = null;
+            }
+
+            return false;
+        }
+
+        private static List<ConnectionEndpoint> GetConnectionEndpoints(RuntimeSettings settings)
+        {
+            var endpoints = new List<ConnectionEndpoint>();
+            if (settings == null || settings.ServerPort <= 0)
+            {
+                return endpoints;
+            }
+
+            endpoints.Add(new ConnectionEndpoint
+            {
+                Address = AdbReverseServerAddress,
+                Port = settings.ServerPort,
+                Name = "ADB reverse",
+                Preferred = true
+            });
+
+            var serverAddress = (settings.ServerAddress ?? string.Empty).Trim();
+            if (!string.IsNullOrEmpty(serverAddress) && !IsSameEndpoint(serverAddress, settings.ServerPort, endpoints))
+            {
+                endpoints.Add(new ConnectionEndpoint
+                {
+                    Address = serverAddress,
+                    Port = settings.ServerPort,
+                    Name = "network fallback",
+                    Preferred = false
+                });
+            }
+
+            return endpoints;
+        }
+
+        private static bool IsSameEndpoint(string address, int port, List<ConnectionEndpoint> endpoints)
+        {
+            foreach (var endpoint in endpoints)
+            {
+                if (endpoint.Port == port && string.Equals(endpoint.Address, address, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string DescribeConnectionEndpoints(RuntimeSettings settings)
+        {
+            var endpoints = GetConnectionEndpoints(settings);
+            if (endpoints.Count == 0)
+            {
+                return "no valid connection endpoints";
+            }
+
+            var descriptions = new List<string>();
+            foreach (var endpoint in endpoints)
+            {
+                descriptions.Add($"{endpoint.Name} {endpoint.Address}:{endpoint.Port}");
+            }
+
+            return string.Join(", ", descriptions);
+        }
+
+        private void SubscribeToClient(IRemoteAgentBridgeClient client)
+        {
+            client.OnMessageReceived += OnMessageReceived;
+            client.OnProcessingStateChanged += OnProcessingStateChanged;
+            client.OnConversationCleared += OnRemoteConversationCleared;
+            client.OnConnectionStateChanged += OnConnectionStateChanged;
+            client.OnErrorReceived += OnErrorReceived;
+        }
+
+        private void UnsubscribeFromClient(IRemoteAgentBridgeClient client)
+        {
+            client.OnMessageReceived -= OnMessageReceived;
+            client.OnProcessingStateChanged -= OnProcessingStateChanged;
+            client.OnConversationCleared -= OnRemoteConversationCleared;
+            client.OnConnectionStateChanged -= OnConnectionStateChanged;
+            client.OnErrorReceived -= OnErrorReceived;
         }
 
         #endregion
@@ -411,7 +635,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
 
         #region Push-to-Talk / Voice
 
-#if HAS_META_VOICE_SDK
         private void SetupPushToTalk()
         {
             _pushToTalkController = FindFirstObjectByType<PushToTalkController>();
@@ -431,19 +654,19 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             _pushToTalkController.OnButtonReleased += OnInputButtonReleased;
         }
 
-        private void OnDictationControllerReady(DictationController dictationController)
+        private void BindDictationSource(IDictationSource dictationController)
         {
-            _dictationController = dictationController;
-            _dictationController.OnPartialTranscriptionUpdate += OnPartialTranscriptionUpdate;
-            _dictationController.OnTranscriptionFinalized += OnTranscriptionFinalized;
-            _dictationController.OnDictationError += HandleDictationError;
+            _dictationSource = dictationController;
+            _dictationSource.OnPartialTranscriptionUpdate += OnPartialTranscriptionUpdate;
+            _dictationSource.OnTranscriptionFinalized += OnTranscriptionFinalized;
+            _dictationSource.OnDictationError += HandleDictationError;
         }
 
         private void OnInputButtonPressed()
         {
             // Don't start a live entry or flip the active flag until dictation can actually run,
             // otherwise an orphan entry is left behind and the flag stays stuck, no-op'ing future presses.
-            if (_dictationController == null)
+            if (_dictationSource == null)
             {
                 Debug.LogWarning("[AgentBridgeIntegration] Cannot start dictation - DictationController is not ready yet.");
                 return;
@@ -466,7 +689,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             // always stops a session a press began, never leaving dictation stuck active.
             _isLiveTranscriptionActive = true;
 
-            _dictationController.Toggle(true);
+            _dictationSource.Toggle(true);
 
             _manager?.SetVoiceStatus(ConversationManager.VoiceStatus.Listening);
         }
@@ -483,9 +706,9 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
 
             _manager?.SetVoiceStatus(ConversationManager.VoiceStatus.Processing);
 
-            if (_dictationController != null)
+            if (_dictationSource != null)
             {
-                _dictationController.Toggle(false);
+                _dictationSource.Toggle(false);
             }
             else
             {
@@ -525,7 +748,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         /// </summary>
         private void CancelActiveDictation()
         {
-            _dictationController?.Cancel();
+            _dictationSource?.Cancel();
 
             if (_isLiveTranscriptionActive)
             {
@@ -554,16 +777,14 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             _manager.AddSystemMessage($"[Voice error: {message}]");
             Debug.LogError($"[AgentBridgeIntegration] Dictation failed: {message}");
         }
-#endif
 
         #endregion
 
         #region Send to AgentBridge
 
-#if UNITY_EDITOR
         /// <summary>
-        /// Sends a text message directly to AgentBridge, bypassing voice/PTT.
-        /// This is intended for Editor testing only.
+        /// Sends a typed text message to AgentBridge, bypassing voice/PTT. Used by the panel's
+        /// keyboard text-input path (and by Editor testing).
         /// </summary>
         /// <param name="message">The text message to send</param>
         internal void SendTextMessage(string message)
@@ -577,7 +798,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             _manager?.AddUserMessage(message);
             ProcessTranscription(message);
         }
-#endif
 
         internal async void ProcessTranscription(string transcription)
         {
@@ -642,11 +862,9 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         {
             try
             {
-#if HAS_META_VOICE_SDK
                 // The cleared conversation removed the live-transcription entry; abandon any active
                 // dictation so it doesn't keep the voice state stuck or send a now-orphaned utterance.
                 CancelActiveDictation();
-#endif
 
                 if (_client == null || !_client.IsConnected)
                 {

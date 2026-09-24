@@ -133,18 +133,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
                 var isConnected = connectionStatus == ConversationManager.ConnectionStatus.Connected;
                 DrawStatusRow("AgentBridge", isConnected ? "Connected" : "Disconnected", isConnected);
 
-                // MCP Bridge connection status
-                var controller = _panel.GetComponent<DevAgentController>();
-                if (controller?.McpIntegration != null)
-                {
-                    var mcpConnected = controller.McpIntegration.IsConnected;
-                    DrawStatusRow("MCP Bridge", mcpConnected ? "Connected" : "Disconnected", mcpConnected);
-                }
-                else
-                {
-                    DrawStatusRow("MCP Bridge", "Not available", false);
-                }
-
                 // Voice status
                 var voiceStatus = conversationManager.CurrentVoiceStatus;
                 var isListening = voiceStatus == ConversationManager.VoiceStatus.Listening;

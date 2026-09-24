@@ -26,6 +26,8 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Meta.XR.Editor.Notifications")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.About")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.Nux")]
+[assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.Welcome")]
 [assembly: InternalsVisibleTo("Oculus.VR.Editor")]
 [assembly: InternalsVisibleTo("Meta.XR.MetaWand.Editor")]
+[assembly: InternalsVisibleTo("Meta.XR.Editor.MetaXROperator")]
 

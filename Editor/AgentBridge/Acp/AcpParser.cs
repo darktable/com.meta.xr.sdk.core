@@ -87,20 +87,25 @@ namespace Meta.XR.AI.AgentBridge.Acp
                         var toolCallId = update.Update["toolCallId"]?.ToString() ?? "";
                         var title = update.Update["title"]?.ToString() ?? "Tool call";
                         var kind = update.Update["kind"]?.ToString();
-                        var status = update.Update["status"]?.ToString();
 
-                        var formattedContent = $"[{title}]";
-                        if (!string.IsNullOrEmpty(status))
+                        // Map the ACP tool "kind" to a label the HRT status line renders nicely:
+                        // FormatAIToolActivity turns "[Read] (foo.cs)" into "Reading foo.cs" and shows
+                        // the parenthesized title verbatim for unmapped kinds.
+                        var toolLabel = kind switch
                         {
-                            formattedContent += $" {status}";
-                        }
+                            "read" => "Read",
+                            "edit" => "Edit",
+                            "execute" => "Bash",
+                            "search" => "Grep",
+                            _ => string.IsNullOrEmpty(kind) ? "Tool" : kind
+                        };
 
                         return new ConversationStreamParser.ConversationInfo
                         {
                             HasContent = true,
                             MessageType = "tool_use",
-                            Content = formattedContent,
-                            ToolName = title,
+                            Content = $"[{toolLabel}] ({title})",
+                            ToolName = toolLabel,
                             MessageId = $"acp_tool_{toolCallId}",
                             IsStreaming = false,
                             IsDelta = false
@@ -183,11 +188,27 @@ namespace Meta.XR.AI.AgentBridge.Acp
                     }
 
                     case "usage_update":
-                        // Log usage but don't create a conversation message
-                        var inputTokens = update.Update["inputTokens"]?.ToObject<int?>();
-                        var outputTokens = update.Update["outputTokens"]?.ToObject<int?>();
+                    {
+                        // Surface usage (no conversation message) so the service can
+                        // accumulate it per caller. ACP reports cumulative input/output
+                        // tokens for the turn.
+                        var inputTokens = update.Update["inputTokens"]?.ToObject<int?>() ?? 0;
+                        var outputTokens = update.Update["outputTokens"]?.ToObject<int?>() ?? 0;
                         Log.Info($"ACP usage: input={inputTokens}, output={outputTokens}");
-                        return null;
+                        if (inputTokens == 0 && outputTokens == 0)
+                        {
+                            return null;
+                        }
+                        return new ConversationStreamParser.ConversationInfo
+                        {
+                            HasContent = false,
+                            Usage = new UsageTotals
+                            {
+                                InputTokens = inputTokens,
+                                OutputTokens = outputTokens
+                            }
+                        };
+                    }
 
                     default:
                         Log.Info($"ACP: Unhandled session update type: {updateType}");

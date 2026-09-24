@@ -21,7 +21,6 @@
 #nullable enable
 
 using System;
-using System.Linq;
 using System.Text;
 using System.Threading;
 using UnityEditor;
@@ -448,39 +447,10 @@ namespace Meta.XR.RuntimeOptimizer.Editor
             }
             lastSelectedInsight = InsightType.SCENE_INSIGHT;
 
-            var parsedMessage = message.Split(';');
-
-            if (parsedMessage.Length > 0 && parsedMessage[0].Trim().Equals("success", StringComparison.OrdinalIgnoreCase))
+            if (SceneDiagnosisPayload.IsSuccess(message))
             {
                 RO.RuntimeOptimizerPlugin.SendEvent("scene_diagnosis_data", InsightEventDataStr.ToJsonStr("success"));
-                foreach (var dataPoint in parsedMessage.Skip(1))
-                {
-                    if (!string.IsNullOrEmpty(dataPoint))
-                    {
-                        var properties = dataPoint.Split(',');
-                        var gameObjectPerformanceData = new RO.GameObjectPerformanceMetaData();
-                        foreach (var property in properties)
-                        {
-                            var keyValue = property.Split(':');
-                            var key = keyValue[0].Trim();
-                            var value = keyValue[1].Trim();
-                            switch (key)
-                            {
-                                case "GameObjectName":
-                                    gameObjectPerformanceData.GameObjectName = value;
-                                    break;
-                                case "CpuMainThreadTime":
-                                    // Only parse if value is not empty (for group mode individual GOs)
-                                    if (!string.IsNullOrEmpty(value))
-                                    {
-                                        gameObjectPerformanceData.CpuMainThreadTime = double.Parse(value);
-                                    }
-                                    break;
-                            }
-                        }
-                        gameObjectPerformanceDataList.Add(gameObjectPerformanceData);
-                    }
-                }
+                gameObjectPerformanceDataList.AddRange(SceneDiagnosisPayload.ParseDataPoints(message));
                 sortGameObjectDataListBy(ref gameObjectPerformanceDataList, sortingFilterSelection);
 
                 // Clear monitoring flags when What If analysis completes successfully

@@ -38,7 +38,8 @@ internal class OVRConfigurationTaskUpdater : OVRConfigurationTaskProcessor
 
     protected override Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>> OpenTasksFilter =>
         (Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>>)(tasksToFilter => tasksToFilter
-            .Where(task => !task.IsIgnored(BuildTargetGroup))
+            .Where(task => !task.IsIgnored(BuildTargetGroup)
+                           && OVRProjectSetup.IsTaskVisibleInProjectSetupTool(task))
             .ToList());
 
     public override ProcessorType Type => ProcessorType.Updater;

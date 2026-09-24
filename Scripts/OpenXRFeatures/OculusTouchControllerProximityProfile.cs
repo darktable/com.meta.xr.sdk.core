@@ -43,7 +43,6 @@ namespace Meta.XR
         desc: "Adds proximity interaction paths for trigger and thumb on the Oculus Touch Controller Interaction Profile.",
         docsLink: "https://developers.meta.com/horizon/documentation/unity/unity-ovrinput/#button-touch-and-neartouch",
         version: "0.0.1",
-        targetApiVersion: "1.1.45",
         extensions: new[] { "XR_FB_touch_controller_proximity" })]
 #endif
     public class OculusTouchControllerProximityProfile : OpenXRInteractionFeature

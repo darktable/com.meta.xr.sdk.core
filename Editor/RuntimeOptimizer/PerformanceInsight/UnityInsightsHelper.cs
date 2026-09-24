@@ -112,9 +112,29 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
     static class UnityInsightsHelper
     {
         private const float kGPUTimeMax = 13.0f;
-        // this is suppose to be 13.888888888889
-        // though as perf capture cost some time, in general under 14 would be 72fps
-        private const float kCPUTimeMax = 14.0f;
+
+        /// <summary>Main-thread CPU budget per frame, in milliseconds.</summary>
+        /// <remarks>
+        /// This was 14ms, chosen against the 13.89ms frame interval at 72Hz, back when the CPU
+        /// figure being compared was that interval rather than CPU work. Now that the comparison
+        /// uses main-thread busy time it has to be a budget for work, not for frame length, or
+        /// the check stops firing: on a scene measuring 6.5-8ms of main-thread work, 14ms would
+        /// require the app to roughly double its CPU cost before saying anything.
+        ///
+        /// 10ms keeps roughly 4ms of the frame in reserve. Unlike kGPUTimeMax, which can sit near
+        /// the whole frame because the GPU is expected to fill it, the main thread has to leave
+        /// room for the render thread and for submission. This is reasoned from the frame budget
+        /// rather than measured -- it has not been calibrated against a genuinely CPU-bound scene.
+        /// </remarks>
+        private const float kCPUTimeMax = 10.0f;
+
+        /// <summary>Frame interval, in milliseconds, above which a frame is treated as a spike.</summary>
+        /// <remarks>
+        /// `top_main_thread_frame_time` is a wall-clock span, not CPU work, so it is compared
+        /// against the 13.89ms frame interval at 72Hz rather than against kCPUTimeMax. Sharing the
+        /// work budget here would flag the worst frame of every healthy capture.
+        /// </remarks>
+        private const float kTopFrameTimeMax = 14.0f;
 
         private const float kHighBinning = 3.0f;
         private const float kALURunningThreashLow = 60.0f;
@@ -615,6 +635,42 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
             }
         }
 
+        /// <summary>Main-thread CPU time per frame, excluding the part of the frame it spent idle.</summary>
+        /// <remarks>
+        /// `main_thread_frame_time` is a wall-clock span, not CPU work: on a 72Hz app that is
+        /// vsync- or GPU-limited it sits at the frame interval no matter how little the main
+        /// thread actually does, which is why it read within 0.2ms of `render_thread_frame_time`
+        /// (13.711 vs 13.885) on a scene whose real main-thread cost was far lower. MetricAPI also
+        /// reports how much of that span the thread was running, so the two together give the
+        /// figure the freeze-frame readout shows from Unity's FrameTimingManager on device.
+        ///
+        /// The mid-frame ratio is used rather than the top-frame one because it pairs with the
+        /// mean; `top_main_thread_frame_time` is the metric that pairs with top_frame. It is a
+        /// percentage in (0, 100]. When it is missing the raw span is returned, which is the
+        /// previous behaviour, and `ratioKnown` tells the caller the result is a frame interval
+        /// rather than CPU work so it is not weighed against a work budget.
+        ///
+        /// The same node also carries `running_time`, the busy time in ms, but that is the value
+        /// for the one mid-performance frame the ratio was taken from. The card reports a
+        /// capture-wide mean, so the ratio is applied to the mean span instead to keep that basis;
+        /// the cost is that a capture whose frame times vary widely has its busy time estimated
+        /// from one frame's duty cycle rather than measured across the run.
+        /// </remarks>
+        private static float MainThreadCpuTime(
+            JSONObject metrics, float mainThreadFrameTime, out bool ratioKnown)
+        {
+            float runRatio = GetFloatVal(
+                GetNodeVal(metrics, "main_thread_mid_frame_run_ratio"), "run_ratio");
+
+            ratioKnown = runRatio > 0.0f && runRatio <= 100.0f;
+            if (!ratioKnown)
+            {
+                return mainThreadFrameTime;
+            }
+
+            return mainThreadFrameTime * (runRatio / 100.0f);
+        }
+
         private static void Boundness(JSONObject metrics, List<string> insights, bool displayTimingInfo, bool aswOn)
         {
             float kASWMultipiler = aswOn ? 0.5f : 1.0f;
@@ -622,9 +678,26 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
             float appGpuRenderTime = GetFloatVal(GetNodeVal(metrics, "app_gpu_time"), "mean");
             float appFrameTime = GetFloatVal(GetNodeVal(metrics, "render_thread_frame_time"), "mean");
             float mainThreadFrameTime = GetFloatVal(GetNodeVal(metrics, "main_thread_frame_time"), "mean");
+            bool mainThreadCpuTimeKnown;
+            float mainThreadCpuTime =
+                MainThreadCpuTime(metrics, mainThreadFrameTime, out mainThreadCpuTimeKnown);
             int mainBufferMSAA = (int)GetFloatVal(GetNodeVal(metrics, "MSAA"), "mean");
+
+            // The profiler layer inflates every timing it reports, so the same discounted figure
+            // feeds both the number on the card and the verdict beside it. Discounting only the
+            // display let a capture read "CPU: 9.9ms" while calling itself CPU bound at 10ms. The
+            // verdict additionally halves for ASW, matching the GPU path: with ASW on the app owns
+            // every other frame, so it may spend twice as long before it is the bottleneck.
+            float mainThreadCpuReported = mainThreadCpuTime * kProfilerCostReduciton;
+
             bool gpuMaxExceeded = (appGpuRenderTime * kASWMultipiler) > kGPUTimeMax;
-            bool cpuMaxExceeded = (mainThreadFrameTime * kASWMultipiler) > kCPUTimeMax;
+
+            // Without the run ratio this figure is a frame interval, not work, so it is weighed
+            // against the frame-interval budget instead. Skipping the check altogether would leave
+            // a genuinely heavy main thread unreported on any capture missing that metric.
+            bool cpuMaxExceeded = mainThreadCpuTimeKnown
+                ? (mainThreadCpuReported * kASWMultipiler) > kCPUTimeMax
+                : (mainThreadCpuReported * kASWMultipiler) > kTopFrameTimeMax;
 
             string fpsStr = string.Format("FPS: {0:0.00}", 1000.0f / (appFrameTime * kASWMultipiler * kProfilerCostReduciton));
             if (aswOn)
@@ -645,12 +718,22 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
                 insights.Add(insight);
             }
 
-            insights.Add(string.Format("CPU: {0:0.00}ms", (appFrameTime * kProfilerCostReduciton)));
+            // Main-thread busy time, the same quantity the freeze-frame readout shows.
+            // render_thread_frame_time is the frame interval rather than CPU work, so it sits at
+            // the refresh rate whatever the app is doing and cannot be compared against a CPU
+            // budget.
+            // Say so when the run ratio was missing: the number is then a frame interval, a
+            // materially different quantity, and showing it bare under the same "CPU:" label is
+            // the reading error this change set out to remove.
+            insights.Add(mainThreadCpuTimeKnown
+                ? string.Format("CPU: {0:0.00}ms", mainThreadCpuReported)
+                : string.Format("CPU: {0:0.00}ms (frame interval)", mainThreadCpuReported));
             insights.Add(string.Format("GPU: {0:0.00}ms", appGpuRenderTime));
 
             if (displayTimingInfo)
             {
-                insights.Add(string.Format("main thread time: {0:0.00} {1}", mainThreadFrameTime, " ms"));
+                insights.Add(string.Format(
+                    "main thread frame interval: {0:0.00} {1}", mainThreadFrameTime, " ms"));
                 if (appGpuRenderTime > 0.0f)
                 {
                     insights.Add(string.Format("gpu time: {0:0.00} {1}", appGpuRenderTime, " ms"));
@@ -694,7 +777,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
             float midFrameCPURunningTime = GetFloatVal(GetNodeVal(metrics, "main_thread_mid_frame_run_ratio"), "running_time");
 
             float topFrameTime = GetFloatVal(metrics, "top_main_thread_frame_time");
-            if (topFrameTime > kCPUTimeMax)
+            if (topFrameTime > kTopFrameTimeMax)
             {
                 insights.Add(string.Format("Top main thread frame time: {0:0.00} {1}", topFrameTime, " ms"));
 

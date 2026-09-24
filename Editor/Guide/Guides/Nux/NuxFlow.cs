@@ -263,11 +263,13 @@ namespace Meta.XR.Guides.Editor.Nux
                 coverElement.style.backgroundImage = new StyleBackground(tex as Texture2D));
             container.Add(coverElement);
 
-            var coverTitle = new Label(NuxSettings.Content.IntroTitle);
+            var nux = WelcomeContentManager.Content.nux;
+
+            var coverTitle = new Label(nux.introTitle);
             coverTitle.AddToClassList(RLDSConstants.Typography.Heading1);
             cover.ContentArea.Add(coverTitle);
 
-            var coverSubtitle = new Label(NuxSettings.Content.IntroSubtitle);
+            var coverSubtitle = new Label(nux.introSubtitle);
             coverSubtitle.AddToClassList(RLDSConstants.Typography.Body1Text);
             coverSubtitle.AddToClassList(RLDSConstants.Utilities.MarginTopXS);
             cover.ContentArea.Add(coverSubtitle);
@@ -278,13 +280,13 @@ namespace Meta.XR.Guides.Editor.Nux
             section.style.paddingLeft = RLDSConstants.Spacing.Size3XL;
             section.style.paddingRight = RLDSConstants.Spacing.Size3XL;
 
-            var sectionHeader = new Label(NuxSettings.Content.WhatsIncludedHeader);
+            var sectionHeader = new Label(nux.whatsIncludedHeader);
             sectionHeader.AddToClassList(RLDSConstants.Typography.Heading2);
             sectionHeader.style.marginTop = RLDSConstants.Spacing.Size4XL;
             sectionHeader.style.marginBottom = RLDSConstants.Spacing.SizeXL;
             section.Add(sectionHeader);
 
-            foreach (var item in NuxSettings.Content.WhatsIncludedItems)
+            foreach (var item in nux.whatsIncludedItems)
             {
                 var bulletItem = new VisualElement();
                 bulletItem.AddToClassList(RLDSConstants.Flexbox.Row);
@@ -296,7 +298,7 @@ namespace Meta.XR.Guides.Editor.Nux
                 icon.style.height = 24;
                 icon.style.flexShrink = 0;
                 icon.style.marginRight = RLDSConstants.Spacing.SizeSM;
-                var featureIcon = GetFeatureIcon(item.IconName);
+                var featureIcon = GetFeatureIcon(item.iconName);
                 if (featureIcon != null)
                 {
                     featureIcon.RegisterToImageLoaded(tex =>
@@ -310,7 +312,7 @@ namespace Meta.XR.Guides.Editor.Nux
                 }
                 bulletItem.Add(icon);
 
-                var text = new Label(item.Text);
+                var text = new Label(item.text);
                 text.AddToClassList(RLDSConstants.Typography.Body1Text);
                 text.style.flexShrink = 1;
                 text.style.whiteSpace = WhiteSpace.Normal;
@@ -330,17 +332,22 @@ namespace Meta.XR.Guides.Editor.Nux
             container.AddToClassList(RLDSConstants.Flexbox.Column);
             container.AddToClassList(RLDSConstants.Flexbox.AlignCenter);
 
+            var nux = WelcomeContentManager.Content.nux;
+
             // Title lockup
             var titleLockup = BuildTitleLockup(
-                NuxSettings.Content.SkillLevelTitle,
-                NuxSettings.Content.SkillLevelSubtitle);
+                nux.skillLevelTitle,
+                nux.skillLevelSubtitle);
             container.Add(titleLockup);
 
             // Skill level selectors
             var selectors = new List<SkillLevelSelector>();
-            foreach (var def in NuxSettings.SkillLevels.All)
+            foreach (var def in nux.skillLevels)
             {
-                selectors.Add(new SkillLevelSelector(def.Id, def.Label, def.Description));
+                // Skip malformed remote entries — a null/empty id would throw as a dictionary key
+                // in SkillLevelSelectorGroup and isn't selectable anyway.
+                if (string.IsNullOrEmpty(def.id)) continue;
+                selectors.Add(new SkillLevelSelector(def.id, def.label, def.description));
             }
 
             var group = new SkillLevelSelectorGroup(selectors, OnSkillLevelSelected, RLDSConstants.Spacing.SizeSM);
@@ -365,10 +372,12 @@ namespace Meta.XR.Guides.Editor.Nux
             container.AddToClassList(RLDSConstants.Flexbox.Column);
             container.AddToClassList(RLDSConstants.Flexbox.AlignCenter);
 
+            var nux = WelcomeContentManager.Content.nux;
+
             // Title lockup
             var titleLockup = BuildTitleLockup(
-                NuxSettings.Content.RoleTitle,
-                NuxSettings.Content.RoleSubtitle);
+                nux.roleTitle,
+                nux.roleSubtitle);
             container.Add(titleLockup);
 
             // Role card grid
@@ -383,29 +392,35 @@ namespace Meta.XR.Guides.Editor.Nux
             _roleCards.Clear();
             string selectedRoleId = SelectedRole.Value;
 
-            for (var i = 0; i < NuxSettings.Roles.All.Length; i++)
+            // Counts only the cards actually added (malformed entries are skipped), so the per-row
+            // right-margin math below tracks the visible grid position, not the array index.
+            var visibleCount = 0;
+            foreach (var def in nux.roles)
             {
-                var def = NuxSettings.Roles.All[i];
-                var card = new RoleCard(def.Label, GetRoleIcon(def.IconName), def.Id);
-                _roleCards[def.Id] = card;
+                // Skip malformed remote entries — a null/empty id would throw on the dictionary
+                // insert below and the card couldn't be selected anyway.
+                if (string.IsNullOrEmpty(def.id)) continue;
+                var card = new RoleCard(def.label, GetRoleIcon(def.iconName), def.id);
+                _roleCards[def.id] = card;
 
-                if (def.Id == selectedRoleId)
+                if (def.id == selectedRoleId)
                 {
                     card.Selected = true;
                 }
 
-                var roleId = def.Id;
+                var roleId = def.id;
                 card.Clicked += () => OnRoleSelected(roleId);
 
                 var cardElement = card.Build();
                 cardElement.style.width = RoleCardWidth;
                 cardElement.style.height = RoleCardHeight;
                 cardElement.style.marginBottom = RLDSConstants.Spacing.SizeSM;
-                if ((i + 1) % RoleGridColumns != 0)
+                if ((visibleCount + 1) % RoleGridColumns != 0)
                 {
                     cardElement.style.marginRight = RLDSConstants.Spacing.SizeSM;
                 }
                 grid.Add(cardElement);
+                visibleCount++;
             }
 
             container.Add(grid);
@@ -524,7 +539,7 @@ namespace Meta.XR.Guides.Editor.Nux
             _backButtonElement = new RLDSButton(
                 new ActionLinkDescription
                 {
-                    Content = new GUIContent(NuxSettings.Content.BackLabel),
+                    Content = new GUIContent(NuxSettings.Footer.Back),
                     Action = OnBack,
                     Id = "NuxBackButton",
                     Origin = Origins.GuidedSetup,
@@ -539,7 +554,7 @@ namespace Meta.XR.Guides.Editor.Nux
             _nextButtonElement = new RLDSButton(
                 new ActionLinkDescription
                 {
-                    Content = new GUIContent(NuxSettings.Content.GetStartedLabel),
+                    Content = new GUIContent(NuxSettings.Footer.GetStarted),
                     Action = OnNext,
                     Id = "NuxNextButton",
                     Origin = Origins.GuidedSetup,
@@ -569,9 +584,9 @@ namespace Meta.XR.Guides.Editor.Nux
             // Next button label
             var label = stepIndex switch
             {
-                0 => NuxSettings.Content.GetStartedLabel,
-                _ when stepIndex >= NuxSettings.StepCount - 1 => NuxSettings.Content.FinishSetupLabel,
-                _ => NuxSettings.Content.NextLabel
+                0 => NuxSettings.Footer.GetStarted,
+                _ when stepIndex >= NuxSettings.StepCount - 1 => NuxSettings.Footer.FinishSetup,
+                _ => NuxSettings.Footer.Next
             };
 
             if (_nextButtonElement is UnityEngine.UIElements.Button btn)

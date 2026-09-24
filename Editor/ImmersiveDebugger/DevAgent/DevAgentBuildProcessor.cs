@@ -27,9 +27,7 @@ using UnityEngine;
 namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
 {
     /// <summary>
-    /// Injects the editor machine's current local network IP and access token into
-    /// the DevAgent RuntimeSettings asset at build time, so Quest builds automatically
-    /// connect back to the correct editor instance without manual configuration.
+    /// Configures the DevAgent runtime fallback connection settings at build time.
     /// </summary>
     internal class DevAgentBuildProcessor : IPreprocessBuildWithReport, IPostprocessBuildWithReport
     {
@@ -48,8 +46,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             _previousServerAddress = settings.ServerAddress;
             _previousAccessToken = settings.AccessToken;
 
-            // Inject the editor machine's local network IP so remote devices (Quest)
-            // can connect over the local network instead of trying localhost.
+            // Inject the editor machine's local network IP as a fallback after ADB reverse.
             var localIp = NetworkUtilities.GetLocalNetworkAddress();
             settings.ServerAddress = localIp;
 
@@ -59,7 +56,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
 
             EditorUtility.SetDirty(settings);
 
-            Debug.Log($"[DevAgent] Build: injected server address {localIp} and access token into RuntimeSettings");
+            Debug.Log($"[DevAgent] Build: injected fallback server address {localIp} and access token into RuntimeSettings.");
         }
 
         public void OnPostprocessBuild(BuildReport report)
@@ -73,5 +70,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent.Editor
             settings.SetAccessToken(_previousAccessToken);
             EditorUtility.SetDirty(settings);
         }
+
     }
 }

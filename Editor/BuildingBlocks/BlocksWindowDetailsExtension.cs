@@ -505,6 +505,20 @@ namespace Meta.XR.BuildingBlocks.Editor
                     ? UIStyles.ContentStatusType.Success
                     : UIStyles.ContentStatusType.Error;
                 new BulletedLabel($"<i>{package}</i>", installed).Draw();
+                if (CustomPackageDependencyRegistry.IsPackageDepInCustomRegistry(package))
+                {
+                    var info = CustomPackageDependencyRegistry.GetPackageDepInfo(package);
+                    if (!info.IsPackageInstalled() && !string.IsNullOrWhiteSpace(info.InstallationInstructions))
+                    {
+                        new GroupedItem(new IUserInterfaceItem[]
+                            {
+                                new AddSpace(space:20, direction: AddSpace.SpaceDirection.Horizontal),
+                                new Label($"- <i>{info.InstallationInstructions}</i>"),
+                                new AddSpace(true)
+                            })
+                            .Draw();
+                    }
+                }
             }
 
             EditorGUILayout.EndVertical();

@@ -96,6 +96,9 @@ public static class OVRProjectSetup
     internal static readonly HashSet<BuildTargetGroup> SupportedPlatforms = new HashSet<BuildTargetGroup>
         { BuildTargetGroup.Android, BuildTargetGroup.Standalone };
 
+    // Groups hidden from the generic Project Setup Tool but still usable by the tool that owns them.
+    private static readonly HashSet<TaskGroup> _groupsHiddenFromProjectSetupTool = new HashSet<TaskGroup>();
+
 
     internal const string PublicName = "Project Setup Tool";
 
@@ -189,6 +192,7 @@ public static class OVRProjectSetup
         }
 
         LatestSummary = summary;
+        ToolRegistry.NotifyStatusChanged(ToolDescriptor);
     }
 
     // The status menu shows up to two severity badges (Figma node 4818-71850): a red
@@ -310,6 +314,28 @@ public static class OVRProjectSetup
     internal static IEnumerable<OVRConfigurationTask> GetTasks(BuildTargetGroup buildTargetGroup)
     {
         return Registry.GetValidTasks(buildTargetGroup);
+    }
+
+    internal static void SetGroupHiddenFromProjectSetupTool(TaskGroup group, bool hidden)
+    {
+        if (hidden)
+        {
+            _groupsHiddenFromProjectSetupTool.Add(group);
+        }
+        else
+        {
+            _groupsHiddenFromProjectSetupTool.Remove(group);
+        }
+    }
+
+    internal static bool IsTaskVisibleInProjectSetupTool(OVRConfigurationTask task)
+    {
+        return task != null && !_groupsHiddenFromProjectSetupTool.Contains(task.Group);
+    }
+
+    internal static bool IsGroupHiddenFromProjectSetupTool(TaskGroup group)
+    {
+        return _groupsHiddenFromProjectSetupTool.Contains(group);
     }
 
     /// <summary>
@@ -565,10 +591,11 @@ public static class OVRProjectSetup
         Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>> filter = null,
         LogMessages logMessages = LogMessages.Disabled,
         bool blocking = true,
-        Action<OVRConfigurationTaskProcessor> onCompleted = null)
+        Action<OVRConfigurationTaskProcessor> onCompleted = null,
+        bool allowHiddenGroupTasks = false)
     {
         var fixer = new OVRConfigurationTaskFixer(Registry, buildTargetGroup, filter, logMessages, blocking,
-            onCompleted);
+            onCompleted, allowHiddenGroupTasks);
         ProcessorQueue.Request(fixer);
     }
 
@@ -587,14 +614,15 @@ public static class OVRProjectSetup
         OVRConfigurationTask task,
         LogMessages logMessages = LogMessages.Disabled,
         bool blocking = true,
-        Action<OVRConfigurationTaskProcessor> onCompleted = null
+        Action<OVRConfigurationTaskProcessor> onCompleted = null,
+        bool allowHiddenGroupTasks = false
     )
     {
         // TODO : A bit overkill for just one task
         var filter = (Func<IEnumerable<OVRConfigurationTask>, List<OVRConfigurationTask>>)(tasks =>
             tasks.Where(otherTask => otherTask == task).ToList());
         var fixer = new OVRConfigurationTaskFixer(Registry, buildTargetGroup, filter, logMessages, blocking,
-            onCompleted);
+            onCompleted, allowHiddenGroupTasks);
         ProcessorQueue.Request(fixer);
     }
 

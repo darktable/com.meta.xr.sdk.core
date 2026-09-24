@@ -24,7 +24,6 @@ using System.Runtime.InteropServices;
 using Meta.XR.Util;
 using UnityEngine;
 using UnityEngine.Events;
-using UnityEngine.Serialization;
 using ColorMapType = OVRPlugin.InsightPassthroughColorMapType;
 
 /// <summary>
@@ -44,44 +43,6 @@ using ColorMapType = OVRPlugin.InsightPassthroughColorMapType;
 public class OVRPassthroughLayer : MonoBehaviour
 {
     #region Public Interface
-
-    /// <summary>
-    /// \deprecated The passthrough projection surface type: reconstructed | user defined.
-    /// </summary>
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    public enum ProjectionSurfaceType
-    {
-        /// Reconstructed surface type will render passthrough using automatic environment depth reconstruction.
-        Reconstructed,
-
-        /// UserDefined allows you to define the projection surface manually, see [Surface Projected Passthrough](https://developer.oculus.com/documentation/unity/unity-customize-passthrough-surface-projected-passthrough/).
-        UserDefined
-    }
-
-    /// <summary>
-    /// \deprecated The type of the surface which passthrough textures are projected on: Automatic reconstruction or user-defined geometry.
-    /// This field can only be modified immediately after the component is instantiated (e.g. using `AddComponent`).
-    /// Once the backing layer has been created, changes won't be reflected unless the layer is disabled and enabled again.
-    /// Default is automatic reconstruction.
-    /// </summary>
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    [HideInInspector]
-    public ProjectionSurfaceType projectionSurfaceType = ProjectionSurfaceType.Reconstructed;
-
-    /// <summary>
-    /// \deprecated Specify whether passthrough should appear on top of (`OverlayType.Overlay`) or beneath (`OverlayType.Underlay`) the virtual content. The default is `Underlay`.
-    /// </summary>
-    [Obsolete("Passthrough flexible layering is being deprecated and support for it will be removed in a future release. Moving forward, there will be only one background Passthrough layer rendered beneath the eye buffer.")]
-    [HideInInspector]
-    public OVROverlay.OverlayType overlayType = OVROverlay.OverlayType.Underlay;
-
-    /// <summary>
-    /// \deprecated Defines the order of the layers among all passthrough layers and OVROverlay instances. The layer with smaller compositionDepth
-    /// is composited in the front of the layer with larger compositionDepth. The default value is zero.
-    /// </summary>
-    [Obsolete("Passthrough flexible layering is being deprecated and support for it will be removed in a future release. Moving forward, there will be only one background Passthrough layer rendered beneath the eye buffer.")]
-    [HideInInspector]
-    public int compositionDepth = 0;
 
     /// <summary>
     /// Hides the passthrough layer from view when `true` and pauses the system's passthrough system if there are no other visible passthrough layers.
@@ -108,91 +69,7 @@ public class OVRPassthroughLayer : MonoBehaviour
     public Vector4 colorOffset = Vector4.zero;
 
     /// <summary>
-    /// \deprecated Adds a GameObject to the passthrough projection surface.
-    /// </summary>
-    /// <remarks>
-    /// This is only applicable if #projectionSurfaceType is set to \link ProjectionSurfaceType::UserDefined UserDefined \endlink. Refer to
-    /// [Surface Projected Passthrough](https://developer.oculus.com/documentation/unity/unity-customize-passthrough-surface-projected-passthrough/)
-    /// for more details.
-    ///
-    /// When `updateTransform` parameter is set to `true`, current layer will update the transform
-    /// of the surface mesh every frame. Otherwise only the initial transform is recorded.
-    /// </remarks>
-    /// <param name="obj">The Gameobject you want to add to the Insight Passthrough projection surface.</param>
-    /// <param name="updateTransform">Indicate if the transform should be updated every frame</param>
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    public void AddSurfaceGeometry(GameObject obj, bool updateTransform = false)
-    {
-        if (projectionSurfaceType != ProjectionSurfaceType.UserDefined)
-        {
-            Debug.LogError("Passthrough layer is not configured for surface projected passthrough.");
-            return;
-        }
-
-        if (surfaceGameObjects.ContainsKey(obj))
-        {
-            Debug.LogError("Specified GameObject has already been added as passthrough surface.");
-            return;
-        }
-
-        if (obj.GetComponent<MeshFilter>() == null)
-        {
-            Debug.LogError("Specified GameObject does not have a mesh component.");
-            return;
-        }
-
-        // Mesh and instance can't be created immediately, because the compositor layer may not have been initialized yet (layerId = 0).
-        // Queue creation and attempt to do it in the update loop.
-        deferredSurfaceGameObjects.Add(
-            new DeferredPassthroughMeshAddition
-            {
-                gameObject = obj,
-                updateTransform = updateTransform
-            });
-    }
-
-    /// <summary>
-    /// \deprecated Removes a GameObject that was previously added using `AddSurfaceGeometry` from the projection surface.
-    /// </summary>
-    /// <param name="obj">The GameObject to remove.</param>
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    public void RemoveSurfaceGeometry(GameObject obj)
-    {
-        PassthroughMeshInstance passthroughMeshInstance;
-        if (surfaceGameObjects.TryGetValue(obj, out passthroughMeshInstance))
-        {
-            if (OVRPlugin.DestroyInsightPassthroughGeometryInstance(passthroughMeshInstance.instanceHandle) &&
-                OVRPlugin.DestroyInsightTriangleMesh(passthroughMeshInstance.meshHandle))
-            {
-                surfaceGameObjects.Remove(obj);
-            }
-            else
-            {
-                Debug.LogError("GameObject could not be removed from passthrough surface.");
-            }
-        }
-        else
-        {
-            int count = deferredSurfaceGameObjects.RemoveAll(x => x.gameObject == obj);
-            if (count == 0)
-            {
-                Debug.LogError("Specified GameObject has not been added as passthrough surface.");
-            }
-        }
-    }
-
-    /// <summary>
-    /// \deprecated Checks if the given gameobject is a surface geometry (If called with AddSurfaceGeometry).
-    /// </summary>
-    /// <returns> `true` if the GameObject has been added to the passthrough projection surface.</returns>
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    public bool IsSurfaceGeometry(GameObject obj)
-    {
-        return surfaceGameObjects.ContainsKey(obj) || deferredSurfaceGameObjects.Exists(x => x.gameObject == obj);
-    }
-
-    /// <summary>
-    /// Defines the passthrough opacity. It can be used to blend between passthrough and VR when `overlayType` is set to `OverlayType.Overlay`, or to dim passthrough when `overlayType is set to `OverlayType.Underlay`.
+    /// Defines the passthrough opacity. Use this to dim passthrough.
     /// Value ranges from 0f to 1f.
     /// </summary>
     public float textureOpacity
@@ -587,185 +464,6 @@ public class OVRPassthroughLayer : MonoBehaviour
 
     #region Internal Methods
 
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private void AddDeferredSurfaceGeometries()
-    {
-        for (int i = 0; i < deferredSurfaceGameObjects.Count; ++i)
-        {
-            var entry = deferredSurfaceGameObjects[i];
-            bool entryIsPassthroughObject = false;
-            if (entry.gameObject)
-            {
-                if (surfaceGameObjects.ContainsKey(entry.gameObject))
-                {
-                    entryIsPassthroughObject = true;
-                }
-                else
-                {
-                    if (CreateAndAddMesh(entry.gameObject, out var meshHandle, out var instanceHandle,
-                            out var localToWorld))
-                    {
-                        surfaceGameObjects.Add(entry.gameObject, new PassthroughMeshInstance
-                        {
-                            meshHandle = meshHandle,
-                            instanceHandle = instanceHandle,
-                            updateTransform = entry.updateTransform,
-                            localToWorld = localToWorld,
-                        });
-                        entryIsPassthroughObject = true;
-                    }
-                    else
-                    {
-                        Debug.LogWarning(
-                            "Failed to create internal resources for GameObject added to passthrough surface.");
-                    }
-                }
-            }
-
-            if (entryIsPassthroughObject)
-            {
-                deferredSurfaceGameObjects.RemoveAt(i--);
-            }
-        }
-    }
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private Matrix4x4 GetTransformMatrixForPassthroughSurfaceObject(Matrix4x4 worldFromObj)
-    {
-        using var profile = new OVRProfilerScope(nameof(GetTransformMatrixForPassthroughSurfaceObject));
-
-        if (!cameraRigInitialized)
-        {
-            cameraRig = OVRManager.instance.GetComponentInParent<OVRCameraRig>();
-            cameraRigInitialized = true;
-        }
-
-        Matrix4x4 trackingSpaceFromWorld =
-            (cameraRig != null) ? cameraRig.trackingSpace.worldToLocalMatrix : Matrix4x4.identity;
-
-        // Use model matrix to switch from left-handed coordinate system (Unity)
-        // to right-handed (Open GL/Passthrough API): reverse z-axis
-        Matrix4x4 rightHandedFromLeftHanded = Matrix4x4.Scale(new Vector3(1, 1, -1));
-        return rightHandedFromLeftHanded * trackingSpaceFromWorld * worldFromObj;
-    }
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private bool CreateAndAddMesh(
-        GameObject obj,
-        out ulong meshHandle,
-        out ulong instanceHandle,
-        out Matrix4x4 localToWorld)
-    {
-        Debug.Assert(passthroughOverlay != null);
-        Debug.Assert(passthroughOverlay.layerId > 0);
-        meshHandle = 0;
-        instanceHandle = 0;
-        localToWorld = obj.transform.localToWorldMatrix;
-
-        MeshFilter meshFilter = obj.GetComponent<MeshFilter>();
-        if (meshFilter == null)
-        {
-            Debug.LogError("Passthrough surface GameObject does not have a mesh component.");
-            return false;
-        }
-
-        Mesh mesh = meshFilter.sharedMesh;
-
-        // TODO: evaluate using GetNativeVertexBufferPtr() instead to avoid copy
-        Vector3[] vertices = mesh.vertices;
-        int[] triangles = mesh.triangles;
-        Matrix4x4 T_worldInsight_model = GetTransformMatrixForPassthroughSurfaceObject(localToWorld);
-
-        if (!OVRPlugin.CreateInsightTriangleMesh(passthroughOverlay.layerId, vertices, triangles, out meshHandle))
-        {
-            Debug.LogWarning("Failed to create triangle mesh handle.");
-            return false;
-        }
-
-        if (!OVRPlugin.AddInsightPassthroughSurfaceGeometry(passthroughOverlay.layerId, meshHandle,
-                T_worldInsight_model, out instanceHandle))
-        {
-            Debug.LogWarning("Failed to add mesh to passthrough surface.");
-            return false;
-        }
-
-        return true;
-    }
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private void DestroySurfaceGeometries(bool addBackToDeferredQueue = false)
-    {
-        foreach (KeyValuePair<GameObject, PassthroughMeshInstance> el in surfaceGameObjects)
-        {
-            if (el.Value.meshHandle != 0)
-            {
-                OVRPlugin.DestroyInsightPassthroughGeometryInstance(el.Value.instanceHandle);
-                OVRPlugin.DestroyInsightTriangleMesh(el.Value.meshHandle);
-
-                // When DestroySurfaceGeometries is called from OnDisable, we want to keep track of the existing
-                // surface geometries so we can add them back when the script gets enabled again. We simply reinsert
-                // them into deferredSurfaceGameObjects for that purpose.
-                if (addBackToDeferredQueue)
-                {
-                    deferredSurfaceGameObjects.Add(
-                        new DeferredPassthroughMeshAddition
-                        {
-                            gameObject = el.Key,
-                            updateTransform = el.Value.updateTransform
-                        });
-                }
-            }
-        }
-
-        surfaceGameObjects.Clear();
-    }
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private void UpdateSurfaceGeometryTransforms()
-    {
-        using var profile = new OVRProfilerScope(nameof(UpdateSurfaceGeometryTransforms));
-
-        // Iterate through mesh instances and see if transforms need to be updated
-        using (new OVRObjectPool.ListScope<GameObject>(out var removedGameObjects))
-        {
-            foreach (var kvp in surfaceGameObjects)
-            {
-                if (kvp.Key == null)
-                {
-                    removedGameObjects.Add(kvp.Key);
-                    continue;
-                }
-
-                var instanceHandle = kvp.Value.instanceHandle;
-                if (instanceHandle == 0) continue;
-
-                var localToWorld = kvp.Value.updateTransform
-                    ? kvp.Key.transform.localToWorldMatrix
-                    : kvp.Value.localToWorld;
-
-                UpdateSurfaceGeometryTransform(instanceHandle, localToWorld);
-            }
-
-            foreach (var removedGameObject in removedGameObjects)
-            {
-                RemoveSurfaceGeometry(removedGameObject);
-            }
-        }
-    }
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private void UpdateSurfaceGeometryTransform(ulong instanceHandle, Matrix4x4 localToWorld)
-    {
-        var worldInsightModel = GetTransformMatrixForPassthroughSurfaceObject(localToWorld);
-        using (new OVRProfilerScope(nameof(OVRPlugin.UpdateInsightPassthroughGeometryTransform)))
-        {
-            if (!OVRPlugin.UpdateInsightPassthroughGeometryTransform(instanceHandle, worldInsightModel))
-            {
-                Debug.LogWarning("Failed to update a transform of a passthrough surface");
-            }
-        }
-    }
-
     // Returns a gradient from black to white.
     internal static Gradient CreateNeutralColorMapGradient()
     {
@@ -830,31 +528,15 @@ public class OVRPassthroughLayer : MonoBehaviour
     private void SyncToOverlay()
     {
         Debug.Assert(passthroughOverlay != null);
-#pragma warning disable CS0618
-        passthroughOverlay.currentOverlayType = overlayType;
-        passthroughOverlay.compositionDepth = compositionDepth;
-        passthroughOverlay.hidden = hidden || IsUserDefinedAndDoesNotContainSurfaceGeometry();
+        passthroughOverlay.currentOverlayType = OVROverlay.OverlayType.Underlay;
+
+        // Enforce passthrough to be the background layer
+        passthroughOverlay.compositionDepth = int.MaxValue;
+        passthroughOverlay.hidden = hidden;
         passthroughOverlay.overridePerLayerColorScaleAndOffset = overridePerLayerColorScaleAndOffset;
         passthroughOverlay.colorScale = colorScale;
         passthroughOverlay.colorOffset = colorOffset;
 
-        if (passthroughOverlay.currentOverlayShape != overlayShape)
-        {
-            if (passthroughOverlay.layerId > 0)
-            {
-                Debug.LogWarning("Change to projectionSurfaceType won't take effect until the layer " +
-                                 "goes through a disable/enable cycle. ");
-            }
-
-            if (projectionSurfaceType == ProjectionSurfaceType.Reconstructed)
-            {
-                // Ensure there are no custom surface geometries when switching to reconstruction passthrough.
-                Debug.Log("Removing user defined surface geometries");
-                DestroySurfaceGeometries(false);
-            }
-
-            passthroughOverlay.currentOverlayShape = overlayShape;
-        }
         var wasPassthroughOverlayEnabled = passthroughOverlay.enabled;
 
         // Disable the overlay when passthrough is disabled as a whole so the layer doesn't get submitted.
@@ -865,26 +547,10 @@ public class OVRPassthroughLayer : MonoBehaviour
                                      OVRManager.instance.isInsightPassthroughEnabled &&
                                      OVRManager.IsInsightPassthroughInitialized();
 
-        if (wasPassthroughOverlayEnabled != passthroughOverlay.enabled)
+        if (wasPassthroughOverlayEnabled != passthroughOverlay.enabled && passthroughOverlay.enabled)
         {
-            if (passthroughOverlay.enabled)
-            {
-                styleDirty = true;
-            }
-            else
-            {
-                DestroySurfaceGeometries(true);
-            }
+            styleDirty = true;
         }
-#pragma warning restore CS0618
-    }
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private bool IsUserDefinedAndDoesNotContainSurfaceGeometry()
-    {
-        return projectionSurfaceType == ProjectionSurfaceType.UserDefined
-            && deferredSurfaceGameObjects.Count == 0
-            && surfaceGameObjects.Count == 0;
     }
 
     private static float ClampWeight(float weight)
@@ -901,49 +567,8 @@ public class OVRPassthroughLayer : MonoBehaviour
     #endregion
 
     #region Internal Fields/Properties
-    private static OVRPassthroughLayer instance;
-    private OVRCameraRig cameraRig;
-    private bool cameraRigInitialized = false;
     private GameObject auxGameObject;
     private OVROverlay passthroughOverlay;
-
-    // Each GameObjects requires a MrTriangleMesh and a MrPassthroughGeometryInstance handle.
-    // The structure also keeps a flag for whether transform updates should be tracked.
-    private struct PassthroughMeshInstance
-    {
-        public ulong meshHandle;
-        public ulong instanceHandle;
-        public bool updateTransform;
-        public Matrix4x4 localToWorld;
-    }
-
-    [Serializable]
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    internal struct SerializedSurfaceGeometry
-    {
-        public MeshFilter meshFilter;
-        public bool updateTransform;
-    }
-
-    // A structure for tracking a deferred addition of a game object to the projection surface
-    private struct DeferredPassthroughMeshAddition
-    {
-        public GameObject gameObject;
-        public bool updateTransform;
-    }
-
-    // GameObjects which are in use as Insight Passthrough projection surface.
-    private Dictionary<GameObject, PassthroughMeshInstance> surfaceGameObjects =
-        new Dictionary<GameObject, PassthroughMeshInstance>();
-
-    // GameObjects which are pending addition to the Insight Passthrough projection surfaces.
-    private List<DeferredPassthroughMeshAddition> deferredSurfaceGameObjects =
-        new List<DeferredPassthroughMeshAddition>();
-
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    [SerializeField, HideInInspector]
-    internal List<SerializedSurfaceGeometry> serializedSurfaceGeometry =
-        new List<SerializedSurfaceGeometry>();
 
     [SerializeField]
     [Range(0, 1)]
@@ -968,50 +593,37 @@ public class OVRPassthroughLayer : MonoBehaviour
     // Keep a copy of a neutral gradient ready for comparison.
     static readonly private Gradient colorMapNeutralGradient = CreateNeutralColorMapGradient();
 
-    // \deprecated Overlay shape derived from `projectionSurfaceType`.
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-    private OVROverlay.OverlayShape overlayShape
-    {
-        get
-        {
-            return projectionSurfaceType == ProjectionSurfaceType.UserDefined
-                ? OVROverlay.OverlayShape.SurfaceProjectedPassthrough
-                : OVROverlay.OverlayShape.ReconstructionPassthrough;
-        }
-    }
-
     #endregion
 
-    #region Unity Messages    
+    #region Unity Messages
     void Awake()
     {
-#pragma warning disable CS0618
-        foreach (var surfaceGeometry in serializedSurfaceGeometry)
+        int layersInSameScene = 0;
+#if UNITY_6000_4_OR_NEWER
+        foreach (var layer in FindObjectsByType<OVRPassthroughLayer>())
+#else
+        foreach (var layer in FindObjectsByType<OVRPassthroughLayer>(FindObjectsSortMode.None))
+#endif
         {
-            if (surfaceGeometry.meshFilter == null) continue;
-
-            deferredSurfaceGameObjects.Add(new DeferredPassthroughMeshAddition
+            if (layer.gameObject.scene == gameObject.scene)
             {
-                gameObject = surfaceGeometry.meshFilter.gameObject,
-                updateTransform = surfaceGeometry.updateTransform
-            });
+                layersInSameScene++;
+            }
         }
-#pragma warning restore CS0618
-        if (instance != null && instance != this)
+
+        if (layersInSameScene > 1)
         {
 #if UNITY_EDITOR
-            Debug.LogWarning("There should be only one instance of OVRPassthroughLayer! " +
+            Debug.LogWarning("There should be only one instance of OVRPassthroughLayer per scene! " +
                 "If running Passthrough over Meta Quest Link, there will always only be one passthrough layer " +
                 "rendered in the background behind the Unity eye buffer layer.");
 #else
-            Debug.Assert(false, "There should be only one instance of OVRPassthroughLayer! " +
+            Debug.Assert(false, "There should be only one instance of OVRPassthroughLayer per scene! " +
                 "It is recommended that you remove any duplicates. " +
                 "In the future, support for multiple passthrough layers will be removed " +
                 "in favour of having one single passthrough layer set in the background!");
 #endif
-            return;
         }
-        instance = this;
     }
 
     void Update()
@@ -1034,16 +646,7 @@ public class OVRPassthroughLayer : MonoBehaviour
             // Layer not initialized yet
             return;
         }
-#pragma warning disable CS0618
-        if (projectionSurfaceType == ProjectionSurfaceType.UserDefined)
-        {
-            // Update the poses before adding new items to avoid redundant calls.
-            UpdateSurfaceGeometryTransforms();
 
-            // Delayed additon of passthrough surface geometries.
-            AddDeferredSurfaceGeometries();
-        }
-#pragma warning restore CS0618
         // Update passthrough color map with gradient if it was changed in the inspector.
         UpdateColorMapFromControls();
 
@@ -1096,9 +699,7 @@ public class OVRPassthroughLayer : MonoBehaviour
 
         // Add OVROverlay component for the passthrough proxy layer.
         passthroughOverlay = auxGameObject.AddComponent<OVROverlay>();
-#pragma warning disable CS0618
-        passthroughOverlay.currentOverlayShape = overlayShape;
-#pragma warning restore CS0618
+        passthroughOverlay.currentOverlayShape = OVROverlay.OverlayShape.ReconstructionPassthrough;
 
         OVRManager.PassthroughLayerResumed += OnPassthroughLayerResumed;
 
@@ -1125,12 +726,6 @@ public class OVRPassthroughLayer : MonoBehaviour
     void OnDisable()
     {
         OVRManager.PassthroughLayerResumed -= OnPassthroughLayerResumed;
-#pragma warning disable CS0618
-        if (OVRManager.loadedXRDevice == OVRManager.XRDevice.Oculus)
-        {
-            DestroySurfaceGeometries(true);
-        }
-#pragma warning restore CS0618
         if (auxGameObject != null)
         {
             Debug.Assert(passthroughOverlay != null);
@@ -1138,13 +733,6 @@ public class OVRPassthroughLayer : MonoBehaviour
             auxGameObject = null;
             passthroughOverlay = null;
         }
-    }
-
-    void OnDestroy()
-    {
-#pragma warning disable CS0618
-        DestroySurfaceGeometries();
-#pragma warning restore CS0618
     }
 
     private void OnPassthroughLayerResumed(int layerId)

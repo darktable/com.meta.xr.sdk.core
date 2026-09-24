@@ -18,12 +18,17 @@
  * limitations under the License.
  */
 
-#if !(UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || (UNITY_ANDROID && !UNITY_EDITOR))
+#if !(UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN || (UNITY_ANDROID && !UNITY_EDITOR))
 #define OVRPLUGIN_UNSUPPORTED_PLATFORM
 #endif
 
-#if !(UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || (UNITY_ANDROID && !UNITY_EDITOR))
+#if !(UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN || (UNITY_ANDROID && !UNITY_EDITOR))
 #define OVRPLUGIN_QPL_UNSUPPORTED_PLATFORM
+#endif
+
+#if OVRROPLUGIN_TESTING && UNITY_EDITOR && OVRPLUGIN_UNSUPPORTED_PLATFORM
+#define OVRPLUGIN_EDITOR_MOCK_ENABLED
+#undef OVRPLUGIN_UNSUPPORTED_PLATFORM
 #endif
 
 using System;
@@ -32,11 +37,6 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 using RO = Meta.XR.RuntimeOptimizer.Core;
-
-#if OVRROPLUGIN_TESTING && UNITY_EDITOR && OVRPLUGIN_UNSUPPORTED_PLATFORM
-#define OVRPLUGIN_EDITOR_MOCK_ENABLED
-#undef OVRPLUGIN_UNSUPPORTED_PLATFORM
-#endif
 
 namespace Meta.XR.RuntimeOptimizer.Core
 {
@@ -104,6 +104,37 @@ namespace Meta.XR.RuntimeOptimizer.Core
             return true;
         }
 
+        /// <summary>
+        /// Returns the leading run of real samples from a NaN-prefilled native buffer.
+        /// </summary>
+        /// <remarks>
+        /// Native writes from index 0 upwards and leaves the remainder untouched, so the first NaN
+        /// marks the end of the data. An empty result means "the profiler produced no samples", which
+        /// callers must not confuse with "the GPU measured 0 ms".
+        /// </remarks>
+        internal static float[] ExtractWrittenSamples(float[] buffer)
+        {
+            if (buffer == null)
+            {
+                return new float[0];
+            }
+
+            int sampleCount = 0;
+            while (sampleCount < buffer.Length && !float.IsNaN(buffer[sampleCount]))
+            {
+                sampleCount++;
+            }
+
+            if (sampleCount == buffer.Length)
+            {
+                return buffer;
+            }
+
+            var samples = new float[sampleCount];
+            Array.Copy(buffer, samples, sampleCount);
+            return samples;
+        }
+
 #if UNITY_ANDROID
     public static bool InitializeGpuProfiling()
     {
@@ -134,21 +165,29 @@ namespace Meta.XR.RuntimeOptimizer.Core
 
     public static bool GetFrameTime(int frameCount, out float[] frameTimes, string processName = "", bool stop = false)
     {
-        // Allocate buffer for frame times
+        // Allocate buffer for frame times.
+        //
+        // The native call reports success for three different outcomes: it started a trace, it
+        // stopped one, or it polled one. Only the poll writes samples, and a poll that matched no
+        // frames writes nothing while still returning true. Pre-filling with NaN lets us tell
+        // "no samples" apart from "measured 0 ms" -- without it the caller receives a zero-filled
+        // buffer of the requested length and records a fabricated 0 for every GameObject.
         float[] buffer = new float[frameCount];
+        for (int i = 0; i < frameCount; i++)
+        {
+            buffer[i] = float.NaN;
+        }
 
         bool result = OVRROP_0_0_1.ovrro_GetFrameTime(frameCount, buffer, processName, stop);
 
-        if (result)
-        {
-            frameTimes = buffer;
-        }
-        else
+        if (!result)
         {
             frameTimes = new float[0];
+            return false;
         }
 
-        return result;
+        frameTimes = ExtractWrittenSamples(buffer);
+        return true;
     }
 #endif
 

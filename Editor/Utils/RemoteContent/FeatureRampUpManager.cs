@@ -45,12 +45,24 @@ namespace Meta.XR.Editor.RemoteContent
 
         private static readonly SessionStateBoolDictionary RampKeysCache = new("FeatureRampUp_");
 
+        private static readonly CustomInt LastSentSdkVersion =
+            new SessionInt
+            {
+                Owner = null,
+                Uid = "FeatureRampUpLastSentSdkVersion",
+                SendTelemetry = false,
+                Default = -1,
+            };
+
         private const double CacheDurationInHours = 6;
         private const string DownloadUrl = "https://www.facebook.com/devtools_feature_ramp_up";
         private const string CacheFileName = "feature_ramp_up_keys.json";
+        private const string SdkVersionMetadataKey = "sdk_version";
         private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10.0f);
 
         private static RemoteJsonContentDownloader _downloader;
+
+        internal static event Action KeysReady;
 
         static FeatureRampUpManager()
         {
@@ -75,6 +87,7 @@ namespace Meta.XR.Editor.RemoteContent
 
             if (!InitSession.Value)
             {
+                SendEventIfSdkVersionChanged();
                 return;
             }
 
@@ -108,7 +121,26 @@ namespace Meta.XR.Editor.RemoteContent
                 productType = TelemetryProductType.Editor
             };
             unifiedEvent.SetMetadata(OVRTelemetryConstants.OVRManager.AnnotationTypes.FeatureRampUpValues, keysString);
-            unifiedEvent.Send();
+
+            var sdkVersion = RemoteContentEnvironment.SdkVersion;
+            if (sdkVersion.HasValue)
+            {
+                unifiedEvent.SetMetadata(SdkVersionMetadataKey, sdkVersion.Value);
+            }
+
+            if (unifiedEvent.Send() && sdkVersion.HasValue)
+            {
+                LastSentSdkVersion.SetValue(sdkVersion.Value);
+            }
+        }
+
+        private static void SendEventIfSdkVersionChanged()
+        {
+            var sdkVersion = RemoteContentEnvironment.SdkVersion;
+            if (sdkVersion.HasValue && sdkVersion.Value != LastSentSdkVersion.Value)
+            {
+                SendEvent();
+            }
         }
 
         private static async Task<bool> Reload(bool forceRedownload)
@@ -200,6 +232,7 @@ namespace Meta.XR.Editor.RemoteContent
             }
 
             InitSession.Set(false);
+            KeysReady?.Invoke();
 
             return true;
         }

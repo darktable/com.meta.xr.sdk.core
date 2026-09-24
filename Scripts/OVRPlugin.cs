@@ -113,7 +113,7 @@ public static partial class OVRPlugin
 #if OVRPLUGIN_UNSUPPORTED_PLATFORM && OVRPLUGIN_QPL_UNSUPPORTED_PLATFORM
     public static readonly System.Version wrapperVersion = _versionZero;
 #else
-    public static readonly System.Version wrapperVersion = OVRP_1_205_0.version;
+    public static readonly System.Version wrapperVersion = OVRP_1_207_0.version;
 #endif
 
 #if !(OVRPLUGIN_UNSUPPORTED_PLATFORM && OVRPLUGIN_QPL_UNSUPPORTED_PLATFORM)
@@ -602,7 +602,7 @@ public static partial class OVRPlugin
         Meta_Quest_Pro = 10,
         Meta_Quest_3 = 11,
         Meta_Quest_3S = 12,
-        Placeholder_13,
+        Meta_VR_Glasses,
         Placeholder_14,
         Placeholder_15,
         Placeholder_16,
@@ -622,7 +622,7 @@ public static partial class OVRPlugin
         Meta_Link_Quest_Pro,
         Meta_Link_Quest_3,
         Meta_Link_Quest_3S,
-        PC_Placeholder_4106,
+        Meta_Link_VR_Glasses,
         PC_Placeholder_4107,
         PC_Placeholder_4108,
         PC_Placeholder_4109,
@@ -666,8 +666,7 @@ public static partial class OVRPlugin
     {
         return shape == OverlayShape.ReconstructionPassthrough
                || shape == OverlayShape.KeyboardHandsPassthrough
-               || shape == OverlayShape.KeyboardMaskedHandsPassthrough
-               || shape == OverlayShape.SurfaceProjectedPassthrough;
+               || shape == OverlayShape.KeyboardMaskedHandsPassthrough;
     }
 
     public enum Step
@@ -3238,6 +3237,35 @@ public static partial class OVRPlugin
     }
 
 
+    /// <summary>
+    /// Contains the current eye gaze interaction pose and tracking status.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct EyeGazeInteractionState
+    {
+        /// <summary>
+        /// The eye gaze interaction pose.
+        /// </summary>
+        public Posef Pose;
+
+        internal Bool _isValid;
+
+        /// <summary>
+        /// True if the eye gaze interaction pose is valid, otherwise false.
+        /// </summary>
+        public bool IsValid => _isValid == Bool.True;
+
+        /// <summary>
+        /// The timestamp associated with the eye gaze interaction state.
+        /// </summary>
+        public double Time;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct EyeGazeInteractionStateInternal
+    {
+        public EyeGazeInteractionState EyeGazeInteraction;
+    }
 
     public enum ColorSpace
     {
@@ -11062,6 +11090,74 @@ public static partial class OVRPlugin
 #endif
     }
 
+    /// <summary>
+    /// True if eye gaze interaction is enabled, otherwise false.
+    /// </summary>
+    public static bool eyeGazeInteractionsEnabled =>
+#if OVRPLUGIN_UNSUPPORTED_PLATFORM
+        false;
+#else
+        version >= OVRP_1_101_0.version &&
+        OVRP_1_101_0.ovrp_GetEyeGazeInteractionsEnabled(out var val) == Result.Success &&
+        val == Bool.True;
+#endif // OVRPLUGIN_UNSUPPORTED_PLATFORM
+
+    /// <summary>
+    /// True if eye gaze interaction is supported, otherwise false.
+    /// </summary>
+    public static bool eyeGazeInteractionsSupported =>
+#if OVRPLUGIN_UNSUPPORTED_PLATFORM
+        false;
+#else
+        version >= OVRP_1_101_0.version &&
+        OVRP_1_101_0.ovrp_GetEyeGazeInteractionsSupported(out var val) == Result.Success &&
+        val == Bool.True;
+#endif // OVRPLUGIN_UNSUPPORTED_PLATFORM
+
+    private static EyeGazeInteractionStateInternal cachedEyeGazeInteractionState =
+        new EyeGazeInteractionStateInternal();
+
+    /// <summary>
+    /// Gets the current eye gaze interaction state.
+    /// </summary>
+    /// <param name="stepId">The tracking step to query.</param>
+    /// <param name="frameIndex">The frame index to query.</param>
+    /// <param name="eyeGazeInteractionState">The eye gaze interaction state to populate.</param>
+    /// <returns>True if the eye gaze interaction state was retrieved successfully, otherwise false.</returns>
+    public static bool GetEyeGazeInteractionState(Step stepId, int frameIndex,
+        ref EyeGazeInteractionState eyeGazeInteractionState)
+    {
+#if OVRPLUGIN_UNSUPPORTED_PLATFORM
+        return false;
+#else
+        if (nativeXrApi == XrApi.OpenXR && stepId == Step.Physics)
+        {
+            Debug.LogWarning("EyeTrack Step.Physics is deprecated when using OpenXR");
+            stepId = Step.Render;
+        }
+
+        if (version >= OVRP_1_79_0.version)
+        {
+            Result res =
+                OVRP_1_79_0.ovrp_GetEyeGazeInteractionState(stepId, frameIndex, out cachedEyeGazeInteractionState);
+            if (res == Result.Success)
+            {
+                eyeGazeInteractionState =
+                    cachedEyeGazeInteractionState.EyeGazeInteraction;
+                return true;
+            }
+            else
+            {
+                Debug.LogWarning($"EyeTrack {nameof(GetEyeGazeInteractionState)} failed");
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+#endif
+    }
 
     public static bool StartEyeTracking() =>
 #if OVRPLUGIN_UNSUPPORTED_PLATFORM
@@ -14308,6 +14404,7 @@ public static partial class OVRPlugin
         }
     }
 
+
     private const string pluginName = "OVRPlugin";
     private static System.Version _versionZero = new System.Version(0, 0, 0);
 
@@ -15791,6 +15888,9 @@ public static partial class OVRPlugin
             TrackingOrigin trackingOrigin);
 
 
+        [DllImport(pluginName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern Result ovrp_GetEyeGazeInteractionState(Step stepId, int frameIndex,
+            out EyeGazeInteractionStateInternal eyeGazeInteractionState);
 
         [DllImport(pluginName, CallingConvention = CallingConvention.Cdecl)]
         public static extern Result ovrp_DeclareUser(in UInt64 userId, out UInt64 userHandle);
@@ -16107,6 +16207,11 @@ public static partial class OVRPlugin
     {
         public static readonly System.Version version = new System.Version(1, 101, 0);
 
+        [DllImport(pluginName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern Result ovrp_GetEyeGazeInteractionsEnabled(out Bool enabled);
+
+        [DllImport(pluginName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern Result ovrp_GetEyeGazeInteractionsSupported(out Bool supported);
     }
 
     private static class OVRP_1_102_0
@@ -16581,6 +16686,7 @@ public static partial class OVRPlugin
     private static class OVRP_1_206_0
     {
         public static readonly System.Version version = new System.Version(1, 206, 0);
+
     }
 
     private static class OVRP_1_207_0

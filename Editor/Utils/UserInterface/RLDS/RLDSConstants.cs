@@ -227,6 +227,21 @@ namespace Meta.XR.Editor.UserInterface.RLDS
         }
 
         /// <summary>
+        /// Alert Banner CSS class names for RLDS design system.
+        /// A dismissible informational banner with optional icon, used in Welcome window.
+        /// </summary>
+        public static class AlertBanner
+        {
+            public const string Base = "rlds-alert-banner";
+            public const string Left = "rlds-alert-banner__left";
+            public const string Icon = "rlds-alert-banner__icon";
+            public const string Label = "rlds-alert-banner__label";
+            public const string CloseButton = "rlds-alert-banner__close";
+            public const string CloseIcon = "rlds-alert-banner__close-icon";
+            public const string Welcome = "rlds-alert-banner--welcome";
+        }
+
+        /// <summary>
         /// Badge Tag CSS class names for RLDS design system.
         /// </summary>
         public static class BadgeTag
@@ -288,6 +303,7 @@ namespace Meta.XR.Editor.UserInterface.RLDS
             public const string Secondary = "rlds-surface-secondary";
             public const string Tertiary = "rlds-surface-tertiary";
             public const string Overlay = "rlds-surface-overlay";
+            public const string Card = "rlds-surface-card";
         }
 
         /// <summary>
@@ -298,6 +314,20 @@ namespace Meta.XR.Editor.UserInterface.RLDS
             public const string Base = "rlds-divider";
             public const string Section = "rlds-divider--section";
             public const string Highlight = "rlds-divider__highlight";
+
+            // "———— or ————" separator: a flex row of two lines around a centered "or" label.
+            public const string Or = "rlds-divider--or";
+            public const string OrLine = "rlds-divider__or-line";
+            public const string OrLabel = "rlds-divider__or-label";
+        }
+
+        /// <summary>
+        /// Opacity values for interactive (hover/pressed) states (RLDS design system).
+        /// </summary>
+        public static class Opacity
+        {
+            public const float Hover = 0.85f;
+            public const float Default = 1f;
         }
 
         public static class BeveledDropdown
@@ -424,6 +454,34 @@ namespace Meta.XR.Editor.UserInterface.RLDS
         }
 
         /// <summary>
+        /// CodeBlock component (scrollable code display with copy button) CSS class names.
+        /// </summary>
+        public static class CodeBlockView
+        {
+            public const string Container = "rlds-code-block-view";
+            public const string Header = "rlds-code-block-view__header";
+            public const string Language = "rlds-code-block-view__language";
+            public const string Scroll = "rlds-code-block-view__scroll";
+            public const string Code = "rlds-code-block-view__code";
+            public const string Copy = "rlds-code-block-view__copy";
+            public const string Copied = "rlds-code-block-view__copy--copied";
+        }
+
+        /// <summary>
+        /// Accordion CSS class names for RLDS design system.
+        /// </summary>
+        public static class Accordion
+        {
+            public const string Root = "rlds-accordion";
+            public const string Expanded = "rlds-accordion--expanded";
+            public const string Header = "rlds-accordion__header";
+            public const string LeadingIcon = "rlds-accordion__leading-icon";
+            public const string Title = "rlds-accordion__title";
+            public const string Chevron = "rlds-accordion__chevron";
+            public const string Content = "rlds-accordion__content";
+        }
+
+        /// <summary>
         /// Toast CSS class names for RLDS design system.
         /// </summary>
         public static class Toast
@@ -455,6 +513,7 @@ namespace Meta.XR.Editor.UserInterface.RLDS
             public const string Eyebrow = "rlds-feature-card__eyebrow";
             public const string EyebrowIcon = "rlds-feature-card__eyebrow-icon";
             public const string EyebrowLabel = "rlds-feature-card__eyebrow-label";
+            public const string LabelRow = "rlds-feature-card__label-row";
             public const string Label = "rlds-feature-card__label";
             public const string Description = "rlds-feature-card__description";
             public const string Link = "rlds-feature-card__link";
@@ -462,8 +521,22 @@ namespace Meta.XR.Editor.UserInterface.RLDS
             public const string LinkIcon = "rlds-feature-card__link-icon";
             public const string CtaButton = "rlds-feature-card__cta-button";
             public const string CtaButtonSecondary = "rlds-feature-card__cta-button--secondary";
+            public const string CtaButtonDisabled = "rlds-feature-card__cta-button--disabled";
             public const string CtaButtonIcon = "rlds-feature-card__cta-button-icon";
             public const string CtaButtonLabel = "rlds-feature-card__cta-button-label";
+            public const string InfoButton = "rlds-feature-card__info-button";
+            public const string InfoButtonIcon = "rlds-feature-card__info-button-icon";
+        }
+
+        public static class HighlightCard
+        {
+            public const string Root = "rlds-highlight-card";
+            public const string Content = "rlds-highlight-card__content";
+            public const string TextGroup = "rlds-highlight-card__text-group";
+            public const string Title = "rlds-highlight-card__title";
+            public const string Description = "rlds-highlight-card__description";
+            public const string ButtonRow = "rlds-highlight-card__button-row";
+            public const string Image = "rlds-highlight-card__image";
         }
 
         /// <summary>
@@ -525,6 +598,40 @@ namespace Meta.XR.Editor.UserInterface.RLDS
             public const string IconButton = "rlds-menu-header__icon-button";
             public const string IconButtonIcon = "rlds-menu-header__icon-button-icon";
             public const string ProfileButton = "rlds-menu-header__profile-button";
+        }
+
+        /// <summary>
+        /// Release note card CSS class names for RLDS design system.
+        /// A card summarizing a single SDK version's release notes, with an optional
+        /// highlighted variant for the target (recommended) upgrade version.
+        /// </summary>
+        public static class ReleaseNoteCard
+        {
+            public const string Root = "rlds-release-note-card";
+            public const string Highlight = "rlds-release-note-card--highlight";
+            public const string Header = "rlds-release-note-card__header";
+            public const string TitleGroup = "rlds-release-note-card__title-group";
+            public const string Version = "rlds-release-note-card__version";
+            public const string Date = "rlds-release-note-card__date";
+            public const string Link = "rlds-release-note-card__link";
+            public const string LinkLabel = "rlds-release-note-card__link-label";
+            public const string LinkIcon = "rlds-release-note-card__link-icon";
+            public const string BulletList = "rlds-release-note-card__bullet-list";
+            public const string Bullet = "rlds-release-note-card__bullet";
+            public const string BulletDot = "rlds-release-note-card__bullet-dot";
+            public const string BulletText = "rlds-release-note-card__bullet-text";
+        }
+
+        /// <summary>
+        /// Version-transition pill CSS class names for RLDS design system.
+        /// Segments of a badge pill reading "from version → to version": a faded source, an accent
+        /// arrow, and a solid target.
+        /// </summary>
+        public static class VersionPill
+        {
+            public const string From = "rlds-version-pill__from";
+            public const string Arrow = "rlds-version-pill__arrow";
+            public const string To = "rlds-version-pill__to";
         }
 
         public static class FontSize
@@ -686,6 +793,9 @@ namespace Meta.XR.Editor.UserInterface.RLDS
 
             // Curson
             public const string CursorLink = "rlds-cursor-link";
+
+            // Link text (blue, colored from --rlds-text-link) for inline hyperlinks.
+            public const string LinkText = "rlds-link-text";
         }
 
         /// <summary>

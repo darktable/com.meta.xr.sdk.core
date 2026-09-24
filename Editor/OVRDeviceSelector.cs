@@ -35,14 +35,14 @@ using Unity.XR.Oculus;
 public class OVRDeviceSelector
 {
     /// <summary>
-    /// Returns true if any Quest-family headset (Quest, Quest 2, Quest Pro, Quest 3, Quest 3S) is selected as a target device.
+    /// Returns true if any Quest-family headset (Quest, Quest 2, Quest Pro, Quest 3, Quest 3S, VR Glasses) is selected as a target device.
     /// </summary>
     public static bool isTargetDeviceQuestFamily
     {
         get
         {
             return isTargetDeviceQuest || isTargetDeviceQuest2 || isTargetDeviceQuestPro || isTargetDeviceQuest3 || isTargetDeviceQuest3S
-            ;
+                || isTargetDeviceVRGlasses;
         }
     }
 
@@ -140,4 +140,19 @@ public class OVRDeviceSelector
         }
     }
 
+    /// <summary>
+    /// Returns true if VR Glasses is selected as a target device.
+    /// </summary>
+    public static bool isTargetDeviceVRGlasses
+    {
+        get
+        {
+#if PRIORITIZE_OCULUS_XR_SETTINGS
+            return false;
+#else
+            OVRProjectConfig projectConfig = OVRProjectConfig.CachedProjectConfig;
+            return projectConfig != null && projectConfig.targetDeviceTypes.Contains(OVRProjectConfig.DeviceType.VRGlasses);
+#endif
+        }
+    }
 }

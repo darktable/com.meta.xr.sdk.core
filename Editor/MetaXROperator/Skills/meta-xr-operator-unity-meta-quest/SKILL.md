@@ -7,7 +7,7 @@ allowed-tools:
 
 # Meta XR Operator on Meta Quest (Unity)
 
-Things to know when using Meta XR Operator to drive and validate **your own Unity app** (built with the Meta XR Core SDK) **on a Meta Quest headset**. Follow **hz-meta-xr-operator** / **hz-meta-xr-operator-unity-workflow** for general runtime interaction, and **hz-meta-xr-operator-coordinates** for coordinate math; this skill is the Quest-on-device delta.
+Things to know when using Meta XR Operator to drive and validate **your own Unity app** (built with the Meta XR Core SDK) **on a Meta Quest headset**. Follow **hz-meta-xr-operator** / **hz-meta-xr-operator-unity-cli-workflow** for general runtime interaction, and **hz-meta-xr-operator-coordinates** for coordinate math; this skill is the Quest-on-device delta.
 
 ## 1. Enable a controller interaction profile for the Android build (REQUIRED)
 
@@ -51,9 +51,13 @@ adb shell setprop debug.meta_xr_operator.verbose 1
 
 If the MCP server is unreachable, re-run `adb forward tcp:8720` and make sure the app is foregrounded (session must reach `FOCUSED`).
 
-## 7. Simulating a controller suppresses the physical controllers
+## 7. Simulating a controller suppresses the *physical* controllers
 
-While the agent drives the simulated controller (conformance automation), the runtime **suppresses physical controller tracking** for that session — relaunch the app to hand control back to physical controllers. If the headset is stationary/off-head and loses positional tracking, Horizon OS shows a **"Finding position in room"** dialog that intercepts XR input; wear the headset or give its cameras a textured view to clear it.
+While the agent drives a simulated controller (conformance automation), the runtime **suppresses physical controller tracking** for that session. Call `openxr_release_input_devices` (or relaunch the app) to hand control back to the physical user's controllers and hands **when you are done** — this is end-of-session cleanup, **not** a prerequisite for switching modality.
+
+To drive **hands** instead of, or alongside, a simulated controller, inject a synthetic hand with `openxr_hand_gesture` / `openxr_set_hand_pose` — a synthetic hand can coexist with a simulated controller, and you do **not** need to release the controller to switch. To switch a session cleanly from controllers to hands, inject synthetic hands on **both** sides (a leftover simulated controller can keep the app in controller mode). See **hz-meta-xr-operator-hand-tracking** for the switching rules and per-gesture recipes.
+
+If the headset is stationary/off-head and loses positional tracking, Horizon OS shows a **"Finding position in room"** dialog that intercepts XR input; wear the headset or give its cameras a textured view to clear it.
 
 ## 8. Debug clicks with verbose input tracing
 

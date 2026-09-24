@@ -18,10 +18,10 @@ oxx_python_library(
     srcs = [
         "MetricAPI.py",
     ],
-    resources = [
-    ],
+    resources = [],
     visibility = [
         "fbsource//arvr/apps/mqdhmcp:hzosmcp_lib",
+        "fbsource//arvr/projects/PerfAgent/...",
         "fbsource//arvr/projects/runtime_optimizer/MCPPrototype/...",
     ],
     deps = [
@@ -46,8 +46,7 @@ oxx_python_library(
         "pyinstaller.py",
         "pyinstaller_hook.py",
     ],
-    visibility = [
-    ],
+    visibility = [],
     deps = [
         "//third-party/pypi/perfetto:perfetto",
         "//third-party/pypi/pyinstaller:pyinstaller",

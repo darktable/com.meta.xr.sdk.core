@@ -99,7 +99,7 @@ public class OVRGradleGeneration
 
 #if UNITY_ANDROID
     public const string prefName = "OVRAutoIncrementVersionCode_Enabled";
-    private const string menuItemAutoIncVersion = "Meta/Options/Auto Increment Version Code";
+    private const string menuItemAutoIncVersion = "Window/Meta/Options/Auto Increment Version Code";
     static bool autoIncrementVersion = false;
 #endif
 
@@ -124,7 +124,7 @@ public class OVRGradleGeneration
     /// <summary>
     /// Toggles the auto-increment version code setting via the Meta > Options menu.
     /// </summary>
-    [MenuItem(menuItemAutoIncVersion)]
+    [MenuItem(menuItemAutoIncVersion, false, 3300)]
     public static void ToggleUtilities()
     {
         autoIncrementVersion = !autoIncrementVersion;
@@ -296,8 +296,9 @@ public class OVRGradleGeneration
 #endif
 #endif
 
-#if UNITY_ANDROID && USING_XR_SDK && !USING_COMPATIBLE_OCULUS_XR_PLUGIN_VERSION
-        if (PlayerSettings.Android.targetArchitectures != AndroidArchitecture.ARM64)
+#if UNITY_ANDROID && USING_XR_SDK && USING_XR_SDK_OCULUS && !USING_COMPATIBLE_OCULUS_XR_PLUGIN_VERSION
+        if (PlayerSettings.Android.targetArchitectures != AndroidArchitecture.ARM64
+            && GetActiveLoader<OculusLoader>(BuildPipeline.GetBuildTargetGroup(EditorUserBuildSettings.activeBuildTarget)) != null)
             throw new BuildFailedException("Your project is using an Oculus XR Plugin version with known issues. Please navigate to the Package Manager and upgrade the Oculus XR Plugin to the latest verified version. When performing the upgrade" +
                 ", you must first \"Remove\" the Oculus XR Plugin package, and then \"Install\" the package at the verified version. Be sure to remove, then install, not just upgrade.");
 #endif

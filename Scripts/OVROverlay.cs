@@ -1355,8 +1355,8 @@ public class OVROverlay : MonoBehaviour
     /// <param name="shape">The overlay shape to check</param>
     /// <returns>True if the shape displays real-world content, false if it requires application textures</returns>
     /// <remarks>
-    /// Passthrough shapes include: ReconstructionPassthrough, SurfaceProjectedPassthrough,
-    /// KeyboardHandsPassthrough, and KeyboardMaskedHandsPassthrough. These shapes are used
+    /// Passthrough shapes include: ReconstructionPassthrough, KeyboardHandsPassthrough,
+    /// and KeyboardMaskedHandsPassthrough. These shapes are used
     /// for mixed reality applications where real-world content is integrated with virtual elements.
     /// </remarks>
     public static bool IsPassthroughShape(OverlayShape shape)

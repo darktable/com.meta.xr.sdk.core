@@ -59,7 +59,6 @@ namespace Meta.XR
         uiName: "Detached Meta Quest Touch Plus Controller Profile",
         desc: "Allows for mapping input to the Meta Quest Touch Plus Detached Controller interaction profile.",
         version: "0.0.1",
-        targetApiVersion: "1.1.45",
         category: FeatureCategory.Interaction,
         extensions: new[] { "XR_META_detached_controllers" })]
 #endif

@@ -66,6 +66,11 @@ namespace Meta.XR.AI.AgentBridge
             /// Claude Code CLI sends deltas, while Devmate Unity Bridge sends full accumulated text.
             /// </summary>
             public bool IsDelta { get; set; }
+            /// <summary>
+            /// Token usage reported by the provider (e.g. an ACP usage_update), or null
+            /// for updates that carry no usage. Services accumulate this per caller.
+            /// </summary>
+            public UsageTotals? Usage { get; set; }
         }
 
         internal static string FormatToolContent(

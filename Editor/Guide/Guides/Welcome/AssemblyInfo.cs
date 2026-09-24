@@ -22,3 +22,9 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.About")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.Guide.Nux")]
+
+// The AI Tools setup panel offers the same "install the Meta VR CLI" CTA as the Welcome card and
+// must make that decision from the same remote flag and the same installer, so the two entry
+// points cannot disagree. See WelcomeSettings.XrTools.IsMetaVrCliDirectInstallAvailable.
+[assembly: InternalsVisibleTo("Meta.XR.Editor.MetaXROperator")]
+

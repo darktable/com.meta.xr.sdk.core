@@ -134,6 +134,25 @@ namespace Meta.XR.AI.AgentBridge
         }
 
         /// <summary>
+        /// Configure <paramref name="psi"/> to launch a CLI executable, accounting for platform
+        /// differences. On Windows, npm-installed CLIs (e.g. codex, claude) are .cmd batch shims
+        /// rather than .exe files; with UseShellExecute disabled, CreateProcess cannot execute them
+        /// directly and throws a Win32Exception, so they must be launched through cmd.exe.
+        /// This sets <see cref="ProcessStartInfo.FileName"/> and seeds the argument list with any
+        /// wrapper prefix. Callers must add the tool's own arguments AFTER calling this.
+        /// </summary>
+        internal static void ConfigureExecutable(ProcessStartInfo psi, string executable)
+        {
+#if UNITY_EDITOR_WIN
+            psi.FileName = "cmd.exe";
+            psi.ArgumentList.Add("/c");
+            psi.ArgumentList.Add(executable);
+#else
+            psi.FileName = executable;
+#endif
+        }
+
+        /// <summary>
         /// Resolve a CLI executable, checking the configured path first, then the login shell,
         /// then falling back to the bare name. Caches the resolved path per instance.
         /// </summary>
@@ -276,6 +295,29 @@ namespace Meta.XR.AI.AgentBridge
         }
 
         #endregion
+
+        /// <summary>
+        /// Safely report whether a process is still running. <see cref="Process.HasExited"/>
+        /// throws <see cref="InvalidOperationException"/> for a process that was constructed but
+        /// never started — the state when a service is selected then switched away before any
+        /// prompt runs. Treats null, never-started, and exited all as "not running".
+        /// </summary>
+        protected static bool IsProcessRunning(Process? process)
+        {
+            if (process == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return !process.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
 
         /// <summary>
         /// Dispose of the service and release all managed and unmanaged resources.

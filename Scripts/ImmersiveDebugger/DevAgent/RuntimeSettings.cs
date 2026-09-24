@@ -74,7 +74,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         }
 
         [Header("AgentBridge Remote Server")]
-        [Tooltip("IP address of the Unity Editor running AgentBridge.")]
+        [Tooltip("Fallback IP address of the Unity Editor running AgentBridge. Runtime clients try ADB reverse first.")]
         [SerializeField] private string serverAddress = "";
         internal string ServerAddress
         {
@@ -90,24 +90,18 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             set => serverPort = value;
         }
 
-        internal bool HasValidConnectionSettings =>
-            !string.IsNullOrWhiteSpace(serverAddress) && serverPort > 0;
-
-        [Header("MCP Bridge")]
-        [Tooltip("Port number for the MCP Bridge HTTP server (default: 48736).")]
-        [SerializeField] private int mcpServerPort = 48736;
-        internal int McpServerPort
-        {
-            get => mcpServerPort;
-            set => mcpServerPort = value;
-        }
-
-        /// <summary>
-        /// Access token for MCP Bridge. Shared with AgentBridge (same token).
-        /// </summary>
-        internal string McpAccessToken => accessToken;
+        internal bool HasValidConnectionSettings => serverPort > 0;
 
         [Header("Voice Input")]
+        [Tooltip("Use the Meta Voice SDK (Wit.ai) for voice input instead of on-device System speech " +
+            "recognition. Off by default (System speech is used). Requires the com.meta.xr.sdk.voice package.")]
+        [SerializeField] private bool useVoiceSdkForInput = false;
+        internal bool UseVoiceSdkForInput
+        {
+            get => useVoiceSdkForInput;
+            set => useVoiceSdkForInput = value;
+        }
+
         [Tooltip("Optional: Assign your own WitConfiguration asset (Assets > Create > Wit > Configuration) " +
             "for higher rate limits and custom intents/entities. If left empty, a built-in demo Wit.ai app " +
             "is used automatically — it supports basic speech-to-text but has limited request quotas and " +

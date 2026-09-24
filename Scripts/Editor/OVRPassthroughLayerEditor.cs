@@ -24,40 +24,6 @@ using UnityEditor;
 using UnityEngine;
 using ColorMapEditorType = OVRPassthroughLayer.ColorMapEditorType;
 
-[CustomPropertyDrawer(typeof(OVRPassthroughLayer.SerializedSurfaceGeometry))]
-[Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
-class SerializedSurfaceGeometryPropertyDrawer : PropertyDrawer
-{
-    public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
-    {
-        // Find the SerializedProperties by name
-        var meshFilterProperty =
-            property.FindPropertyRelative(nameof(OVRPassthroughLayer.SerializedSurfaceGeometry.meshFilter));
-        var updateTransformProperty =
-            property.FindPropertyRelative(nameof(OVRPassthroughLayer.SerializedSurfaceGeometry.updateTransform));
-        var propertyHeight = position.height / 2;
-
-        using (new EditorGUI.PropertyScope(position, label, property))
-        {
-            var surfaceGeometryPropertyPosition = new Rect(position.x, position.y, position.width, propertyHeight);
-            EditorGUI.PropertyField(surfaceGeometryPropertyPosition, meshFilterProperty,
-                new GUIContent("Surface Geometry", "The GameObject from which to generate surface geometry."));
-
-            var heightOffset = EditorGUI.GetPropertyHeight(updateTransformProperty) +
-                               EditorGUIUtility.standardVerticalSpacing;
-            var updateTransformPosition =
-                new Rect(position.x, position.y + heightOffset, position.width, propertyHeight);
-            EditorGUI.PropertyField(updateTransformPosition, updateTransformProperty, new GUIContent("Update Transform",
-                "When enabled, updates the mesh's transform every frame. Use this if the GameObject is dynamic."));
-        }
-    }
-
-    public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
-    {
-        return base.GetPropertyHeight(property, label) * 2.2f;
-    }
-}
-
 [CustomEditor(typeof(OVRPassthroughLayer))]
 public class OVRPassthroughLayerEditor : Editor
 {
@@ -93,12 +59,6 @@ public class OVRPassthroughLayerEditor : Editor
         ColorMapEditorType.Custom
     };
 
-    private SerializedProperty _projectionSurfaces;
-
-    private SerializedProperty _propProjectionSurfaceType;
-    private SerializedProperty _propOverlayType;
-    private SerializedProperty _propCompositionDepth;
-
     private SerializedProperty _propTextureOpacity;
     private SerializedProperty _propEdgeRenderingEnabled;
     private SerializedProperty _propEdgeColor;
@@ -116,13 +76,6 @@ public class OVRPassthroughLayerEditor : Editor
 
     void OnEnable()
     {
-#pragma warning disable CS0618
-        _projectionSurfaces = serializedObject.FindProperty(nameof(OVRPassthroughLayer.serializedSurfaceGeometry));
-
-        _propProjectionSurfaceType = serializedObject.FindProperty(nameof(OVRPassthroughLayer.projectionSurfaceType));
-        _propOverlayType = serializedObject.FindProperty(nameof(OVRPassthroughLayer.overlayType));
-        _propCompositionDepth = serializedObject.FindProperty(nameof(OVRPassthroughLayer.compositionDepth));
-#pragma warning restore CS0618
         _propTextureOpacity = serializedObject.FindProperty(nameof(OVRPassthroughLayer.textureOpacity_));
         _propEdgeRenderingEnabled = serializedObject.FindProperty(nameof(OVRPassthroughLayer.edgeRenderingEnabled_));
         _propEdgeColor = serializedObject.FindProperty(nameof(OVRPassthroughLayer.edgeColor_));
@@ -147,28 +100,7 @@ public class OVRPassthroughLayerEditor : Editor
         OVRPassthroughLayer layer = (OVRPassthroughLayer)target;
 
         serializedObject.Update();
-#pragma warning disable CS0618
-        if (layer.projectionSurfaceType == OVRPassthroughLayer.ProjectionSurfaceType.UserDefined)
-            EditorGUILayout.HelpBox("Surface projected passthrough will be removed in a future update and Reconstructed will be the default.", MessageType.Warning);
-        if ((layer.compositionDepth > 0) || (layer.overlayType != OVROverlay.OverlayType.Underlay))
-            EditorGUILayout.HelpBox("Flexible layering will be removed in a future update. Only one background Passthrough layer will be available.", MessageType.Warning);
-        EditorGUILayout.PropertyField(_propProjectionSurfaceType,
-            new GUIContent("Projection Surface [deprecated]", "[deprecated] The type of projection surface for this Passthrough layer"));
-        if (layer.projectionSurfaceType == OVRPassthroughLayer.ProjectionSurfaceType.UserDefined)
-        {
-            EditorGUILayout.PropertyField(_projectionSurfaces, new GUIContent("Projection Surfaces"));
-        }
-#pragma warning restore CS0618
-        EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Compositing [deprecated]", EditorStyles.boldLabel);
 
-        EditorGUILayout.PropertyField(_propOverlayType,
-            new GUIContent("Placement [deprecated]", "[deprecated] Whether this overlay should layer behind the scene or in front of it"));
-        EditorGUILayout.PropertyField(_propCompositionDepth,
-            new GUIContent("Composition Depth [deprecated]",
-                "[deprecated] Depth value used to sort layers in the scene, smaller value appears in front"));
-
-        EditorGUILayout.Space();
         EditorGUILayout.LabelField("Style", EditorStyles.boldLabel);
 
         EditorGUILayout.Slider(_propTextureOpacity, 0, 1f, new GUIContent("Opacity"));

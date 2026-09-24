@@ -22,8 +22,6 @@ using UnityEngine;
 
 public class ButtonColorChanger : MonoBehaviour
 {
-    public Material targetMaterial;
-
     public void SetRed()
     {
         SetColor(Color.red);
@@ -46,9 +44,15 @@ public class ButtonColorChanger : MonoBehaviour
 
     private void SetColor(Color color)
     {
-        if (targetMaterial != null)
+        var meshRenderer = GetComponent<Renderer>();
+        if (meshRenderer == null)
         {
-            targetMaterial.color = color;
+            return;
         }
+
+        // Renderer.material is this renderer's own material instance (instantiated
+        // once from the shared asset and reused thereafter), so tinting it changes
+        // only this object and never mutates the shared material asset on disk.
+        meshRenderer.material.color = color;
     }
 }

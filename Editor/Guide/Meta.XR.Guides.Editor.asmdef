@@ -8,7 +8,9 @@
         "Meta.XR.Editor.Settings",
         "Meta.XR.Editor.Id",
         "Meta.XR.Editor.ToolingSupport",
-        "Meta.XR.Editor.Notifications"
+        "Meta.XR.Editor.Notifications",
+        "Meta.XR.Editor.StatusMenu",
+        "Meta.XR.Editor.RemoteContent"
     ],
     "includePlatforms": [
         "Editor"

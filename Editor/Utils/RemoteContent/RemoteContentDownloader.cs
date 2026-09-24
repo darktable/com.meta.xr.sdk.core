@@ -59,6 +59,26 @@ namespace Meta.XR.Editor.RemoteContent
         internal static HttpClient Client { get; set; } = new();
     }
 
+    internal static class RemoteContentEnvironment
+    {
+
+        internal static int? SdkVersion
+        {
+            get
+            {
+                if (OVRPlugin.wrapperVersion == null || OVRPlugin.wrapperVersion == new Version(0, 0, 0))
+                {
+                    return null;
+                }
+
+                if (OVRPlugin.wrapperVersion.Minor >= 200)
+                    return OVRPlugin.wrapperVersion.Minor;
+
+                return OVRPlugin.wrapperVersion.Minor - 32;
+            }
+        }
+    }
+
     internal abstract class RemoteContentDownloader<T> where T : RemoteContentDownloader<T>
     {
         private readonly string _url;
@@ -87,22 +107,6 @@ namespace Meta.XR.Editor.RemoteContent
                 Directory.CreateDirectory(directory);
                 _cacheFilePath = Path.Combine(directory, _fileName);
                 return _cacheFilePath;
-            }
-        }
-
-        private static int? SdkVersion
-        {
-            get
-            {
-                if (OVRPlugin.wrapperVersion == null || OVRPlugin.wrapperVersion == new Version(0, 0, 0))
-                {
-                    return null;
-                }
-
-                if (OVRPlugin.wrapperVersion.Minor >= 200)
-                    return OVRPlugin.wrapperVersion.Minor;
-
-                return OVRPlugin.wrapperVersion.Minor - 32;
             }
         }
 
@@ -138,9 +142,10 @@ namespace Meta.XR.Editor.RemoteContent
 
         public T WithCachePerSDKVersion()
         {
-            if (SdkVersion.HasValue)
+            var sdkVersion = RemoteContentEnvironment.SdkVersion;
+            if (sdkVersion.HasValue)
             {
-                _fileName = $"{SdkVersion.Value}_{_fileName}";
+                _fileName = $"{sdkVersion.Value}_{_fileName}";
             }
             return (T)this;
         }
@@ -157,7 +162,10 @@ namespace Meta.XR.Editor.RemoteContent
 
         public T WithSDKVersionUrlParameter()
         {
-            return WithUrlParameter("sdk_version", SdkVersion.HasValue ? SdkVersion.Value.ToString() : string.Empty);
+            var sdkVersion = RemoteContentEnvironment.SdkVersion;
+            return WithUrlParameter(
+                "sdk_version",
+                sdkVersion.HasValue ? sdkVersion.Value.ToString() : string.Empty);
         }
 
         public T WithMachineIdUrlParameter(bool required = false)

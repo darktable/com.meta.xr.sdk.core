@@ -27,6 +27,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Meta.XR.AI.AgentBridge;
+using Meta.XR.Guides.Editor.Welcome;
 using Meta.XR.Editor.UserInterface;
 using Meta.XR.Json;
 using Meta.XR.Editor.UserInterface.RLDS;
@@ -46,6 +47,21 @@ namespace Meta.XR.Editor
         static MetaXROperatorProvider()
         {
             AIToolsSetupRegistry.Register(Instance);
+
+            // The Step-1 CTA depends on two things this provider does not own and that both settle
+            // asynchronously: whether a Meta VR CLI install is in flight (the Welcome card can
+            // start one too) and whether remote content enables direct install at all. Re-render
+            // when either lands, rather than leaving a stale button until the next panel focus.
+            MetaVrCliInstaller.StateChanged += OnMetaVrCliInstallerStateChanged;
+            WelcomeContentManager.OnContentChanged +=
+                AIToolsSetupModel.NotifyProviderStateChanged;
+        }
+
+        private static void OnMetaVrCliInstallerStateChanged()
+        {
+            // The CLI may have just appeared on disk, so the cached "not found" lookup is stale.
+            MetaVrCliXrOperator.ResetProbe();
+            AIToolsSetupModel.NotifyProviderStateChanged();
         }
 
         internal enum TransportMode
@@ -57,6 +73,10 @@ namespace Meta.XR.Editor
         private const string DefaultSSEUrl = "http://localhost:8720/sse";
         private const string SkillsDirectoryName = "Skills";
         private const int VerifyTimeoutMs = 30000;
+
+        // Short budget: removing a legacy entry is best-effort housekeeping and must not stall the
+        // registration it precedes.
+        private const int LegacyCleanupTimeoutMs = 10000;
 
         internal TransportMode SelectedTransport { get; set; } = TransportMode.McpProxy;
         internal bool ShowMcpExplainer { get; set; }
@@ -83,7 +103,7 @@ namespace Meta.XR.Editor
             {
                 new SetupAction
                 {
-                    Label = "Register meta-xr-operator",
+                    Label = "Register metavr (XR Operator)",
                     Order = 10,
                     Execute = RegisterAsync
                 }
@@ -95,12 +115,18 @@ namespace Meta.XR.Editor
             var serviceId = Meta.XR.AI.AgentBridge.Settings.SelectedServiceId.Value;
             var projectRoot = AIToolsSetupModel.GetCurrentProjectRoot();
 
-            // OpenCode has no `mcp add`/`mcp list` CLI (manual-only registration; see
-            // GetRegistrationInfo). Skip CLI verification so we don't spawn a guaranteed-failing
-            // process — or launch OpenCode's interactive TUI on unknown args and hang until
-            // VerifyTimeoutMs. Manual-only setups can't be auto-verified.
+            // The two transports register DIFFERENT server names: McpProxy federates XR Operator's
+            // tools into metavr's own server (registered as "metavr"), while DirectSSE still
+            // registers "meta-xr-operator". Matching the wrong one silently fails verification.
+            var federated = SelectedTransport == TransportMode.McpProxy;
+            var serverName = federated ? MetaVrCliXrOperator.MetavrServerName : OperatorMcpName;
+
+            // OpenCode has no `mcp list` CLI, and spawning `opencode` with unknown args launches
+            // its interactive TUI, which hangs until VerifyTimeoutMs. On the federated path metavr
+            // writes opencode.json itself, so read that back instead. DirectSSE remains
+            // manual-only and therefore unverifiable.
             if (serviceId == OpenCodeService.ServiceId)
-                return false;
+                return federated && OpenCodeConfigHasServer(projectRoot, serverName);
 
             // Gemini's `mcp list` is unreliable to parse
             // so read its settings.json directly when present; if no settings file exists, fall
@@ -109,7 +135,7 @@ namespace Meta.XR.Editor
             // the config actually in use, honoring CODEX_HOME / CLAUDE_CONFIG_DIR, etc.
             if (serviceId == GeminiCliService.ServiceId)
             {
-                var fromConfig = GeminiConfigHasOperator(projectRoot);
+                var fromConfig = GeminiConfigHasServer(projectRoot, serverName);
                 if (fromConfig.HasValue)
                     return fromConfig.Value;
             }
@@ -118,8 +144,52 @@ namespace Meta.XR.Editor
             var result = await AIToolsSetupModel.RunProcessAsync(
                 resolved, "mcp list", token, VerifyTimeoutMs, projectRoot);
             if (token.IsCancellationRequested) return false;
-            var combined = (result.stdout ?? string.Empty) + "\n" + (result.stderr ?? string.Empty);
-            return result.exitCode >= 0 && !result.timedOut && OperatorAppearsInMcpList(combined);
+            if (result.exitCode < 0 || result.timedOut) return false;
+
+            // Match the registered-server table on stdout only. All four agent CLIs print the
+            // `mcp list` table to stdout; stderr carries warnings/errors, and folding it into
+            // the match let an stderr line that merely mentions the server name (e.g.
+            // "metavr: could not reach ...") read as a successful verification.
+            var listOutput = result.stdout ?? string.Empty;
+            return federated
+                ? MetaVrCliXrOperator.MetavrAppearsInMcpList(listOutput)
+                : OperatorAppearsInMcpList(listOutput);
+        }
+
+        // --- OpenCode config-file check (no `mcp list` CLI to ask) ---
+
+        /// <summary>
+        /// True when an opencode.json (project scope, then user scope) registers
+        /// <paramref name="serverName"/>. OpenCode nests servers under "mcp"; "mcpServers" is also
+        /// accepted so a hand-written config in the more common shape still verifies.
+        /// </summary>
+        private static bool OpenCodeConfigHasServer(string projectRoot, string serverName)
+        {
+            var projectContent = string.IsNullOrEmpty(projectRoot)
+                ? null
+                : ReadFileOrNull(Path.Combine(projectRoot, "opencode.json"));
+            var userContent = ReadFileOrNull(Path.Combine(
+                AIToolsSetupModel.GetUserHome(), ".config", "opencode", "opencode.json"));
+
+            return OpenCodeSettingsContainServer(projectContent, serverName)
+                || OpenCodeSettingsContainServer(userContent, serverName);
+        }
+
+        /// <summary>True when an opencode.json registers <paramref name="serverName"/>.</summary>
+        internal static bool OpenCodeSettingsContainServer(string settingsJson, string serverName)
+        {
+            if (string.IsNullOrEmpty(settingsJson))
+                return false;
+            try
+            {
+                var root = JsonObject.Parse(settingsJson);
+                return root["mcp"]?[serverName] != null
+                    || root["mcpServers"]?[serverName] != null;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // --- Gemini config-file check (Gemini's `mcp list` is too noisy to parse reliably) ---
@@ -128,7 +198,7 @@ namespace Meta.XR.Editor
 
         // Gemini defaults to project scope; also accept a user-scope registration. Returns null when
         // no settings file exists so the caller falls back to `mcp list`.
-        private static bool? GeminiConfigHasOperator(string projectRoot)
+        private static bool? GeminiConfigHasServer(string projectRoot, string serverName)
         {
             var projectContent = string.IsNullOrEmpty(projectRoot)
                 ? null
@@ -139,18 +209,22 @@ namespace Meta.XR.Editor
             if (projectContent == null && userContent == null)
                 return null;
 
-            return GeminiSettingsContainOperator(projectContent)
-                || GeminiSettingsContainOperator(userContent);
+            return GeminiSettingsContainServer(projectContent, serverName)
+                || GeminiSettingsContainServer(userContent, serverName);
         }
 
         /// <summary>True when a Gemini settings.json registers meta-xr-operator under mcpServers.</summary>
-        internal static bool GeminiSettingsContainOperator(string settingsJson)
+        internal static bool GeminiSettingsContainOperator(string settingsJson) =>
+            GeminiSettingsContainServer(settingsJson, OperatorMcpName);
+
+        /// <summary>True when a Gemini settings.json registers <paramref name="serverName"/>.</summary>
+        internal static bool GeminiSettingsContainServer(string settingsJson, string serverName)
         {
             if (string.IsNullOrEmpty(settingsJson))
                 return false;
             try
             {
-                return JsonObject.Parse(settingsJson)["mcpServers"]?[OperatorMcpName] != null;
+                return JsonObject.Parse(settingsJson)["mcpServers"]?[serverName] != null;
             }
             catch
             {
@@ -216,21 +290,79 @@ namespace Meta.XR.Editor
 
         public PrerequisiteInstall GetPrerequisiteInstall()
         {
+            // The wizard re-invokes this on every refresh (focus, service change, bridge toggle),
+            // which is the hook we use to notice a CLI or tool installed outside the editor. It is
+            // TTL-throttled, so repeated calls within one UI build reuse the cache instead of
+            // rescanning. Done here rather than on EditorApplication.focusChanged so it can't race
+            // AIToolsSetupWindow.OnFocus (which refreshes step state on the same event) and so no
+            // probe runs while the panel is closed.
+            MetaVrCliXrOperator.InvalidateIfStale();
+
+            var cliInstalled = MetaVrCliXrOperator.IsMetaVrCliInstalled();
+
+            // Only State A consults the direct-install gate, and resolving it walks the resolved
+            // remote content, so don't pay for it once the CLI is present.
+            var directInstall = !cliInstalled && MetaVrCliXrOperator.IsDirectCliInstallAvailable();
+
+            return BuildPrerequisiteInstall(cliInstalled, directInstall);
+        }
+
+        /// <summary>
+        /// Composes the Step-1 descriptor from the two pieces of state that decide it. Split out
+        /// from <see cref="GetPrerequisiteInstall"/> — which reads that state from the filesystem
+        /// and the remote content — so each state's descriptor can be asserted without putting the
+        /// machine into that state.
+        /// </summary>
+        internal static PrerequisiteInstall BuildPrerequisiteInstall(
+            bool metaVrCliInstalled, bool directCliInstallAvailable)
+        {
+            // State A: no Meta VR CLI. Which CTA to show is the Welcome card's decision, read from
+            // the same remote `enableDirectInstall` flag and the same platform check so the two
+            // entry points cannot disagree:
+            //   - enabled  -> "Install Meta VR CLI", running the Welcome card's own installer and
+            //                 then continuing into the XR Operator install (one click, whole step).
+            //   - disabled -> a CtaUrl link to the public prerequisites page, so the panel never
+            //                 pipes a downloaded script into a shell. CtaUrl keeps the step
+            //                 Incomplete: no sticky Error and no false install telemetry.
+            if (!metaVrCliInstalled)
+            {
+                var directInstall = directCliInstallAvailable;
+                return new PrerequisiteInstall
+                {
+                    Label = AIToolsSetupStrings.SubSteps.InstallXROperator,
+                    Description = AIToolsSetupStrings.Descriptions.InstallXROperatorViaCli,
+                    InstalledStatusText = AIToolsSetupStrings.ConnectionStatus.XROperatorInstalled,
+                    NotInstalledStatusText = AIToolsSetupStrings.ConnectionStatus.MetaVrCliNotInstalled,
+                    InstallButtonText = directInstall
+                        ? AIToolsSetupStrings.Buttons.InstallMetaVrCli
+                        : AIToolsSetupStrings.Buttons.DownloadMetaVrCli,
+                    InstallingText = AIToolsSetupStrings.Processing.InstallingMetaVrCli,
+                    IsInstalled = MetaVrCliXrOperator.IsXrOperatorInstalled,
+                    // Exactly one of these is ever set: CtaUrl short-circuits InstallAsync in the
+                    // window's Incomplete branch.
+                    CtaUrl = directInstall ? null : AIToolsSetupStrings.Links.MetaVrCliDownloadUrl,
+                    InstallAsync = directInstall
+                        ? MetaVrCliXrOperator.InstallMetaVrCliAsync
+                        : null
+                };
+            }
+
+            // States B and C: the CLI is present. IsInstalled() drives Incomplete (B) vs Complete
+            // (C); NeedsUpdate adds the Update button on top of Complete. InstallAsync doubles as
+            // the update action, matching how the wizard's onUpdate is wired.
             return new PrerequisiteInstall
             {
-                Label = AIToolsSetupStrings.SubSteps.InstallMcpProxy,
-                Description = AIToolsSetupStrings.Descriptions.InstallMcpProxy,
-                InstalledStatusText = AIToolsSetupStrings.ConnectionStatus.ProxyInstalled,
-                NotInstalledStatusText = AIToolsSetupStrings.ConnectionStatus.ProxyNotInstalled,
-                InstallButtonText = AIToolsSetupStrings.Buttons.InstallMcpProxy,
-                ReinstallButtonText = AIToolsSetupStrings.Buttons.ReinstallMcpProxy,
-                InstallingText = AIToolsSetupStrings.Processing.InstallingProxy,
-                IsInstalled = IsProxyInstalled,
-                InstallAsync = async token =>
-                {
-                    var install = await Task.Run(() => InstallProxy(), token);
-                    return (install.path != null, install.error);
-                }
+                Label = AIToolsSetupStrings.SubSteps.InstallXROperator,
+                Description = AIToolsSetupStrings.Descriptions.InstallXROperatorViaCli,
+                InstalledStatusText = AIToolsSetupStrings.ConnectionStatus.XROperatorInstalled,
+                NotInstalledStatusText = AIToolsSetupStrings.ConnectionStatus.XROperatorNotInstalled,
+                InstallButtonText = AIToolsSetupStrings.Buttons.InstallXROperator,
+                ReinstallButtonText = AIToolsSetupStrings.Buttons.ReinstallXROperator,
+                UpdateButtonText = AIToolsSetupStrings.Buttons.UpdateXROperator,
+                InstallingText = AIToolsSetupStrings.Processing.InstallingXROperator,
+                IsInstalled = MetaVrCliXrOperator.IsXrOperatorInstalled,
+                NeedsUpdate = MetaVrCliXrOperator.XrOperatorNeedsUpdate,
+                InstallAsync = MetaVrCliXrOperator.InstallXrOperatorAsync
             };
         }
 
@@ -245,21 +377,80 @@ namespace Meta.XR.Editor
 
         private async Task<bool> RegisterProxyAsync(SetupContext ctx, CancellationToken token)
         {
-            var proxyPath = GetInstalledProxyPath();
-            if (!File.Exists(proxyPath))
+            var metavr = MetaVrCliXrOperator.FindMetaVrCli();
+            if (metavr == null)
             {
                 UnityEngine.Debug.LogError(
-                    "[MetaXROperator] MCP Proxy is not installed. " +
-                    "Click \"Install MCP Proxy\" in Step 1 of the AI Tools setup wizard.");
+                    "[MetaXROperator] Meta VR CLI is not installed. " +
+                    "Complete the XR Operator install step in the AI Tools setup wizard first.");
                 return false;
             }
 
-            var result = await AIToolsSetupModel.RunProcessAsync(
-                ctx.ServiceExecutable,
-                BuildProxyAddArgs(ctx.ServiceId, $"\"{proxyPath}\""), token,
-                workingDirectory: AIToolsSetupModel.GetCurrentProjectRoot());
+            var projectRoot = AIToolsSetupModel.GetCurrentProjectRoot();
+
+            // Migration cleanup: best-effort removal of a stale meta-xr-operator entry left by the
+            // old bundled-proxy flow, so the agent doesn't end up with both it and metavr.
+            //
+            // Skipped for OpenCode: it has no `mcp` CLI (its old flow was manual-only, so there is
+            // nothing to remove) and spawning `opencode` with unknown args launches its interactive
+            // TUI, which then hangs until the timeout — the same reason VerifyAsync special-cases it.
+            //
+            // MUST be try/catch: RunProcessAsync does not return an error code for a missing
+            // executable, it throws. Unguarded, an agent CLI that isn't on Unity's PATH would fail
+            // the whole registration even though `metavr mcp install <agent>` writes the config file
+            // itself and never needs that CLI.
+            if (ctx.ServiceId != OpenCodeService.ServiceId)
+            {
+                try
+                {
+                    var cleanup = await AIToolsSetupModel.RunProcessAsync(
+                        ctx.ServiceExecutable, MetaVrCliXrOperator.BuildRemoveLegacyEntryArgs(),
+                        token, LegacyCleanupTimeoutMs, projectRoot);
+
+                    // Best-effort housekeeping. A non-zero exit is the only genuine failure
+                    // signal RunProcessAsync surfaces here (it returns rather than throws), so
+                    // leave a breadcrumb — a stale meta-xr-operator entry may persist beside
+                    // metavr (locked/corrupt config), or the CLI simply had nothing to remove.
+                    // Diagnosable rather than fully silent; never fails registration.
+                    if (!cleanup.timedOut && cleanup.exitCode != 0)
+                    {
+                        var detail = string.IsNullOrWhiteSpace(cleanup.stderr)
+                            ? cleanup.stdout : cleanup.stderr;
+                        UnityEngine.Debug.Log(
+                            "[MetaXROperator] Legacy meta-xr-operator cleanup exited " +
+                            $"{cleanup.exitCode} (nothing to remove, or a real failure). {detail}");
+                    }
+                }
+                catch
+                {
+                    // Expected and benign: no legacy entry, or the agent CLI isn't on Unity's
+                    // PATH (metavr writes the config itself and never needs it). Not fatal; not
+                    // logged, so an expected condition doesn't read as a problem.
+                }
+
+                if (token.IsCancellationRequested) return false;
+            }
+
+            var agent = MetaVrCliXrOperator.MetaVrAgentForService(ctx.ServiceId);
+            (int exitCode, string stdout, string stderr, bool timedOut) result;
+            if (agent != null)
+            {
+                result = await AIToolsSetupModel.RunProcessAsync(
+                    metavr, MetaVrCliXrOperator.BuildMcpInstallArgs(agent), token,
+                    workingDirectory: projectRoot);
+            }
+            else
+            {
+                // devmate and anything unmapped: register metavr's stdio server through the
+                // agent's own `mcp add`.
+                result = await AIToolsSetupModel.RunProcessAsync(
+                    ctx.ServiceExecutable,
+                    MetaVrCliXrOperator.BuildFallbackMcpAddArgs($"\"{metavr}\""), token,
+                    workingDirectory: projectRoot);
+            }
+
             if (token.IsCancellationRequested) return false;
-            return result.exitCode == 0 || result.stderr.Contains("already exists");
+            return result.exitCode == 0 || (result.stderr?.Contains("already exists") ?? false);
         }
 
         /// <summary>
@@ -286,7 +477,7 @@ namespace Meta.XR.Editor
                 $"mcp add meta-xr-operator -t sse {DefaultSSEUrl}", token,
                 workingDirectory: AIToolsSetupModel.GetCurrentProjectRoot());
             if (token.IsCancellationRequested) return false;
-            return result.exitCode == 0 || result.stderr.Contains("already exists");
+            return result.exitCode == 0 || (result.stderr?.Contains("already exists") ?? false);
         }
 
         private Task<bool> ActivateAsync(SetupContext ctx, CancellationToken token)
@@ -320,29 +511,54 @@ namespace Meta.XR.Editor
         {
             var serviceId = Meta.XR.AI.AgentBridge.Settings.SelectedServiceId.Value;
 
-            // OpenCode has no `mcp add` CLI — MCP servers are configured by editing opencode.json.
-            // Surface the proxy path to copy plus a link to OpenCode's docs instead of a runnable
-            // command + auto-register button.
-            if (serviceId == OpenCodeService.ServiceId)
+            // DirectSSE is unchanged: it still registers the server under its own name, pointing at
+            // the OpenXR layer's SSE endpoint rather than at metavr.
+            if (SelectedTransport == TransportMode.DirectSSE)
             {
+                var sseCommand = $"{serviceExecutable} mcp add {OperatorMcpName} -t sse {DefaultSSEUrl}";
+
+                // OpenCode has no `mcp add` CLI and metavr isn't involved on this path, so it stays
+                // manual: show the command to copy plus OpenCode's docs, with no Run button.
+                if (serviceId == OpenCodeService.ServiceId)
+                {
+                    return new RegistrationInfo
+                    {
+                        Label = AIToolsSetupStrings.Registration.RuntimeToolsLabel,
+                        Description = AIToolsSetupStrings.Registration.RuntimeToolsDescription,
+                        Command = sseCommand,
+                        DocsUrl = AIToolsSetupStrings.Links.OpenCodeMcpDocsUrl,
+                        DocsLinkText = AIToolsSetupStrings.OpenCode.DocsLinkText,
+                        ManualInstructions = AIToolsSetupStrings.OpenCode.ManualInstructions,
+                        ManualOnly = true
+                    };
+                }
+
                 return new RegistrationInfo
                 {
                     Label = AIToolsSetupStrings.Registration.RuntimeToolsLabel,
                     Description = AIToolsSetupStrings.Registration.RuntimeToolsDescription,
-                    Command = GetProxyPathForCommand(),
-                    DocsUrl = AIToolsSetupStrings.Links.OpenCodeMcpDocsUrl,
-                    DocsLinkText = AIToolsSetupStrings.OpenCode.DocsLinkText,
-                    ManualInstructions = AIToolsSetupStrings.OpenCode.ManualInstructions,
-                    ManualOnly = true
+                    Command = sseCommand
                 };
             }
 
-            string command;
-            if (SelectedTransport == TransportMode.DirectSSE)
-                command = $"{serviceExecutable} mcp add meta-xr-operator -t sse {DefaultSSEUrl}";
-            else
-                command = $"{serviceExecutable} {BuildProxyAddArgs(serviceId, GetProxyPathForCommand())}";
+            // McpProxy (federated): register metavr's own MCP server; XR Operator's tools reach the
+            // assistant through it.
+            //
+            // Shown as the bare `metavr`, not the resolved absolute path: this command is for the
+            // user to paste into a terminal, where the CLI is on PATH. The absolute path is long
+            // enough to wrap badly in the narrow command block, and the panel's own execution
+            // resolves the binary independently (RegisterProxyAsync -> FindMetaVrCli) rather than
+            // parsing this string.
+            var agent = MetaVrCliXrOperator.MetaVrAgentForService(serviceId);
+            var command = agent != null
+                ? $"{MetaVrCliXrOperator.MetavrCommandName} " +
+                  MetaVrCliXrOperator.BuildMcpInstallArgs(agent)
+                : $"{serviceExecutable} " + MetaVrCliXrOperator.BuildFallbackMcpAddArgs(
+                    MetaVrCliXrOperator.MetavrCommandName);
 
+            // OpenCode auto-registers on this path: `metavr mcp install open-code -y` writes
+            // opencode.json directly without ever spawning `opencode`, and VerifyAsync reads that
+            // file back — so it no longer needs to be manual-only.
             return new RegistrationInfo
             {
                 Label = AIToolsSetupStrings.Registration.RuntimeToolsLabel,
@@ -369,7 +585,7 @@ namespace Meta.XR.Editor
             return "~/meta-xr-operator/meta-xr-operator-mcp-proxy";
         }
 
-        internal static string FindProxyBinary([CallerFilePath] string sourceFilePath = "")
+        internal static string FindProxyBinary()
         {
             string platformDir;
             string proxyName;
@@ -390,25 +606,13 @@ namespace Meta.XR.Editor
                 proxyName = "meta-xr-operator-mcp-proxy";
             }
 
-            if (string.IsNullOrEmpty(sourceFilePath))
-                return null;
-
-            var scriptDir = Path.GetDirectoryName(sourceFilePath);
-            if (!string.IsNullOrEmpty(scriptDir))
-            {
-                var path = Path.Combine(scriptDir, "Tools~", platformDir, proxyName);
-                if (File.Exists(path))
-                    return path;
-            }
-
-            return null;
+            return MetaXROperatorPaths.GetProxyBinaryPath(platformDir, proxyName);
         }
 
-        internal (string path, string error) InstallProxy()
+        internal (string path, string error) InstallProxy(string sourcePath)
         {
             try
             {
-                var sourcePath = FindProxyBinary();
                 if (sourcePath == null)
                     return (null, AIToolsSetupStrings.Errors.ProxyBinaryNotFound);
 
@@ -448,6 +652,31 @@ namespace Meta.XR.Editor
         {
             var path = GetInstalledProxyPath();
             return path != null && File.Exists(path);
+        }
+
+        // Installed but stale? Compare the on-disk copy against the SDK-bundled binary byte-for-byte.
+        // Returns false when not installed (that's "install", not "update") or when the source can't be
+        // resolved (don't show an Update button we can't satisfy).
+        internal bool ProxyNeedsUpdate()
+        {
+            try
+            {
+                var installedPath = GetInstalledProxyPath();
+                if (installedPath == null || !File.Exists(installedPath))
+                    return false;
+
+                var sourcePath = FindProxyBinary(); // main-thread UPM resolution
+                if (sourcePath == null || !File.Exists(sourcePath))
+                    return false;
+
+                return !FileComparison.ContentsEqual(sourcePath, installedPath);
+            }
+            catch (Exception)
+            {
+                // Never let a detection hiccup (transient IO, resolution failure) break the panel refresh
+                // or nag with a spurious Update button.
+                return false;
+            }
         }
 
         // --- Activation ---
@@ -1019,7 +1248,7 @@ namespace Meta.XR.Editor
             {
                 var deactivateButton = new UnityEngine.UIElements.Button(() =>
                 {
-                    MetaXROperatorActivator.Deactivate();
+                    MetaXROperatorActivator.Deactivate(MetaXROperatorTelemetryConstants.Source.AiToolsSetup);
                     onStateChanged?.Invoke();
                 })
                 {
@@ -1034,7 +1263,7 @@ namespace Meta.XR.Editor
             {
                 var activateButton = new UnityEngine.UIElements.Button(() =>
                 {
-                    MetaXROperatorActivator.Activate();
+                    MetaXROperatorActivator.Activate(MetaXROperatorTelemetryConstants.Source.AiToolsSetup);
                     onStateChanged?.Invoke();
                 })
                 {

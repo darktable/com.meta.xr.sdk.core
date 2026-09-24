@@ -49,6 +49,7 @@ namespace Meta.XR.AI.AgentBridge
         public static Action<CallerIdentity>? ClearErrorDelegate;
         public static Func<string>? GetSessionIdDelegate;
         public static Func<CallerIdentity?, string>? GetSessionIdForCallerDelegate;
+        public static Func<CallerIdentity?, UsageTotals>? GetUsageForCallerDelegate;
         public static Func<CallerIdentity?, string?>? GetResumeCommandForCallerDelegate;
         public static Action<string>? OpenTerminalWithCommandDelegate;
 
@@ -208,6 +209,20 @@ namespace Meta.XR.AI.AgentBridge
                 return string.Empty;
             }
             return GetSessionIdForCallerDelegate(caller);
+        }
+
+        /// <summary>
+        /// Get the cumulative token/cost usage for a specific caller's conversation.
+        /// Returns zeros if the provider does not report usage or the delegate is unwired.
+        /// </summary>
+        public static UsageTotals GetUsageForCaller(CallerIdentity? caller)
+        {
+            if (GetUsageForCallerDelegate == null)
+            {
+                UnityEngine.Debug.LogError("[AgentBridge] Core service not initialized. Make sure you are running in Unity Editor.");
+                return new UsageTotals();
+            }
+            return GetUsageForCallerDelegate(caller);
         }
 
         /// <summary>

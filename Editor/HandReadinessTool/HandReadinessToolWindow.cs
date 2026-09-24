@@ -54,6 +54,15 @@ namespace Meta.HandReadinessTool.Editor
         private const string PrefKeyIssues = "HandReadiness_Issues";
         private const string PrefKeyDescription = "HandReadiness_ProjectDescription";
 
+        // Fallback provider label when AgentBridge is off or the active service
+        // name can't be resolved, so status copy never renders a blank name.
+        private const string DefaultAiProviderLabel = "Your AI agent";
+
+        // Primary scanning-status line during the AI scan. Shared by the full render
+        // and the in-place animator update so the two can't drift apart.
+        private string AiAnalyzingStatus =>
+            $"{_aiProviderLabel} is analyzing your project for device readiness opportunities...";
+
         private ToolState _currentState = ToolState.Welcome;
         // Default true so the step indicator shows the (longer) AI path on the
         // Welcome and CheckType screens, before the user has actually picked.
@@ -63,6 +72,7 @@ namespace Meta.HandReadinessTool.Editor
         private string _projectDescription = "";
         private VisualElement _contentContainer;
         private VisualElement _stepIndicator;
+        private bool _hasOvrManagerInScene;
 
         // Scan results
         private List<OVRConfigurationTask> _failedTasks;
@@ -73,9 +83,18 @@ namespace Meta.HandReadinessTool.Editor
 
         // AI scan state
         private bool _isAIScanInProgress = false;
+        private bool _isCompilingReport = false;
         private float _aiScanStartTime = 0f;
         private string _lastAIError = null;
         private IVisualElementScheduledItem _aiProgressAnimator;
+
+        // Identifies the in-flight AI scan; bumped on scan start and on leaving the
+        // scanning screen so a superseded scan can drop its late async continuation.
+        private int _aiScanGeneration;
+        private string _aiStatusText = "";
+        // Provider display name (e.g. "Claude Code") captured at scan start so the
+        // per-tick status animator doesn't re-query AgentBridge each frame.
+        private string _aiProviderLabel = DefaultAiProviderLabel;
 
         // Cross-scan snapshots: kept across the lifetime of a RunScan so the merge
         // step at the end can carry forward user-marked-complete state and treat
@@ -114,7 +133,10 @@ namespace Meta.HandReadinessTool.Editor
         /// </summary>
         public static void ShowWindow()
         {
-            var window = GetWindow<HandReadinessToolWindow>(true, HandReadinessConstants.ToolTitle);
+            // Open as a normal (non-utility) window so it can be docked, sent behind
+            // the Unity Editor, and minimized while a scan runs — a floating utility
+            // window (utility: true) stays always-on-top and can't be tucked away.
+            var window = GetWindow<HandReadinessToolWindow>(false, HandReadinessConstants.ToolTitle);
             window.minSize = new Vector2(MinWidth, MinHeight);
             window.Show();
         }
@@ -123,6 +145,7 @@ namespace Meta.HandReadinessTool.Editor
         {
             // Subscribe to task processor completion events to update UI when tasks change
             OVRProjectSetup.ProcessorQueue.OnProcessorCompleted += OnProcessorCompleted;
+            EditorApplication.hierarchyChanged += OnHierarchyChanged;
 
             // Re-render when the user toggles the AgentBridge master setting from
             // Preferences. The screen swaps between the normal checkbox + active-
@@ -151,6 +174,7 @@ namespace Meta.HandReadinessTool.Editor
         private void OnDisable()
         {
             OVRProjectSetup.ProcessorQueue.OnProcessorCompleted -= OnProcessorCompleted;
+            EditorApplication.hierarchyChanged -= OnHierarchyChanged;
             AgentBridgeSettings.Activated -= OnAgentBridgeToggleChanged;
             AgentBridgeSettings.Deactivated -= OnAgentBridgeToggleChanged;
 
@@ -186,8 +210,21 @@ namespace Meta.HandReadinessTool.Editor
             // running after the window is gone.
             if (_isAIScanInProgress)
             {
+                _aiScanGeneration++;
+                _aiProgressAnimator?.Pause();
+                _aiProgressAnimator = null;
+                _isAIScanInProgress = false;
+                StopAIProgressTracking();
                 _ = AgentBridgeAPI.CancelCurrentOperationAsync(
                     new CallerIdentity(HandReadinessConstants.ToolIdentifier));
+            }
+
+            // Close the detached "View Details" popup with the main window — it's a separate
+            // EditorWindow that otherwise lingers after the parent closes. HasOpenInstances
+            // guards against spawning one here.
+            if (HasOpenInstances<IssueDetailsPopup>())
+            {
+                GetWindow<IssueDetailsPopup>().Close();
             }
 
             // Reset persisted session id so the next open starts a new session.
@@ -492,6 +529,10 @@ namespace Meta.HandReadinessTool.Editor
             // tracking task from Recommended to Required from now on.
             HandReadinessSetupTasks.MarkUserOptedIn();
 
+            // Capture the provider name once so the scanning copy can read
+            // "Claude Code is analyzing…" without re-querying AgentBridge per tick.
+            _aiProviderLabel = GetAiProviderLabel();
+
             _failedTasks = new List<OVRConfigurationTask>();
             // Snapshot AI + regex items from the previous scan so the merge step at
             // the end can keep user-marked-complete state and fold in resolved items.
@@ -532,6 +573,9 @@ namespace Meta.HandReadinessTool.Editor
             _aiSubscanSuccess = null;
             _aiErrorKind = null;
             _aiIssuesResolvedFromPrior = 0;
+            // Clear any AI error from a prior scan so a stale banner doesn't carry over. The
+            // Standard flow never enters StartAIScan (where the other reset lives), so reset here too.
+            _lastAIError = null;
             _scanStopwatch = Stopwatch.StartNew();
 
             HandReadinessTelemetry.SendEvent(
@@ -547,8 +591,6 @@ namespace Meta.HandReadinessTool.Editor
                 },
                 isEssential: true);
 
-            Debug.Log($"[HRT] RunScan: found {allTasks.Count} tasks, useAI={_useAI}");
-
             if (allTasks.Count == 0)
             {
                 // No hand-readiness config issues, but the AI/regex code scan can still surface
@@ -559,12 +601,10 @@ namespace Meta.HandReadinessTool.Editor
 
                     if (_useAI)
                     {
-                        Debug.Log("[HRT] No setup tasks — starting AI scan directly");
                         _ = StartAIScan();
                     }
                     else
                     {
-                        Debug.Log("[HRT] No setup tasks — running heuristic code-pattern scan");
                         RunCodeScan();
                         _isScanComplete = true;
                         EmitScanCompleted(success: true, errorKind: null, errorMessage: null);
@@ -591,26 +631,29 @@ namespace Meta.HandReadinessTool.Editor
             // Check if task is done (passed)
             bool isDone = task.IsDone(buildTarget);
 
-            // Add ALL tasks to issues list (both passed and failed)
+            // Only surface automated checks that need action. A task already satisfied at scan
+            // time wasn't applied by this tool, so listing it as a completed row reads as
+            // "auto-applied without clicking". Items the user applies flip to IsFixed and stay
+            // visible as feedback; a re-scan drops them once satisfied.
             if (!isDone)
             {
                 _failedTasks.Add(task);
+
+                _issues.Add(new IssueData
+                {
+                    Title = GetTaskTitle(task, buildTarget),
+                    Description = task.Message.GetValue(buildTarget),
+                    Priority = ConvertTaskLevel(task.Level.GetValue(buildTarget)),
+                    RequiresAI = false,
+                    IsFixed = false,
+                    TaskUid = task.Uid.ToString(),
+                    Category = IssueCategory.Automation
+                });
             }
 
-            _issues.Add(new IssueData
-            {
-                Title = GetTaskTitle(task, buildTarget),
-                Description = task.Message.GetValue(buildTarget),
-                Priority = ConvertTaskLevel(task.Level.GetValue(buildTarget)),
-                RequiresAI = false,
-                IsFixed = isDone,
-                TaskUid = task.Uid.ToString(),
-                Category = IssueCategory.Automation
-            });
-
             _currentCheckIndex++;
-            // Checks fill 0-70% if AI is enabled, 0-100% if not
-            float checkPortion = _useAI ? 0.7f : 1f;
+            // Checks fill 0-50% if AI is enabled, 0-100% if not
+            float checkPortion = _useAI ? 0.5f : 1f;
             _scanProgress = ((float)_currentCheckIndex / tasks.Count) * checkPortion;
 
             // Update scanning screen
@@ -619,8 +662,6 @@ namespace Meta.HandReadinessTool.Editor
             // Check if we're done
             if (_currentCheckIndex >= tasks.Count)
             {
-                Debug.Log($"[HRT] All {tasks.Count} checks done. Failed: {_failedTasks.Count}. useAI={_useAI}");
-
                 // Small delay before showing results or starting AI
                 rootVisualElement.schedule.Execute(() =>
                 {
@@ -628,12 +669,10 @@ namespace Meta.HandReadinessTool.Editor
                     {
                         if (_useAI)
                         {
-                            Debug.Log("[HRT] Starting AI scan...");
                             _ = StartAIScan();
                         }
                         else
                         {
-                            Debug.Log("[HRT] No AI scan — running heuristic code-pattern scan instead");
                             RunCodeScan();
                             _isScanComplete = true;
                             EmitScanCompleted(success: true, errorKind: null, errorMessage: null);
@@ -659,7 +698,6 @@ namespace Meta.HandReadinessTool.Editor
             {
                 var fresh = HandReadinessCodeScanRules.Scan(Application.dataPath);
                 _issues.AddRange(MergeRegexIssues(prior, fresh));
-                Debug.Log($"[HRT] Code scan: {fresh.Count} fresh, {prior.Count} prior — merged");
             }
             catch (Exception ex)
             {
@@ -785,6 +823,13 @@ namespace Meta.HandReadinessTool.Editor
             SaveStateToPrefs();
             RenderCurrentState();
 
+            // Ping the developer when a (long) AI scan finishes, in case they minimized
+            // or parked this window while it ran.
+            if (fromState == ToolState.Scanning && newState == ToolState.Results && _useAI)
+            {
+                NotifyScanFinished();
+            }
+
             // Funnel — one event per state entry so screen-by-screen drop-off
             // is queryable directly. Skip when nothing actually changed.
             if (fromState != newState)
@@ -804,6 +849,80 @@ namespace Meta.HandReadinessTool.Editor
                             _scanIsRescan);
                     });
             }
+        }
+
+        // Kept so the scan-finished toast can be dismissed when the tool tab closes or the
+        // user clicks through to the results.
+        private Meta.XR.Editor.Notifications.Notification _scanFinishedNotification;
+
+        // Fire a Meta XR editor notification (core-SDK toast) when the AI scan finishes,
+        // so a developer who minimized or backgrounded the window gets pinged. The CTA
+        // focuses the window and jumps to the results, then dismisses the toast.
+        private void NotifyScanFinished()
+        {
+            try
+            {
+                var window = this;
+                Meta.XR.Editor.Notifications.Notification notification = null;
+                notification =
+                    new Meta.XR.Editor.Notifications.Notification("hrt_scan_finished")
+                    {
+                        Items = new Meta.XR.Editor.UserInterface.IUserInterfaceItem[]
+                        {
+                            new Meta.XR.Editor.UserInterface.Label(
+                                "Device Readiness Check analysis finished",
+                                EditorStyles.boldLabel),
+                            new Meta.XR.Editor.UserInterface.GroupedItem(
+                                new Meta.XR.Editor.UserInterface.IUserInterfaceItem[]
+                                {
+                                    new Meta.XR.Editor.UserInterface.AddSpace(flexibleSpace: true),
+                                    new Meta.XR.Editor.UserInterface.Button(
+                                        new Meta.XR.Editor.UserInterface.ActionLinkDescription
+                                        {
+                                            Content = new GUIContent("Click to view results"),
+                                            Action = () =>
+                                            {
+                                                if (window != null)
+                                                {
+                                                    window.Focus();
+                                                    window.SetState(ToolState.Results);
+                                                }
+                                                // Dismiss once acted on (or if the window is
+                                                // already gone) so the toast never lingers.
+                                                try { notification?.Remove(Meta.XR.Editor.Id.Origins.Self); }
+                                                catch { }
+                                            },
+                                        }),
+                                }),
+                        },
+                        ShowCloseButton = true,
+                        // Narrower than the 512px default; the two short lines don't need it.
+                        ExpectedWidth = 400,
+                    };
+                // Dismiss any previously-enqueued toast before tracking the new one so at most
+                // one scan-finished toast is ever active (e.g. re-scanning without acting on the
+                // first toast would otherwise leave the earlier one orphaned).
+                try { _scanFinishedNotification?.Remove(Meta.XR.Editor.Id.Origins.Self); }
+                catch { }
+                // Track the new toast only after Enqueue succeeds, so a throw here can't leave
+                // _scanFinishedNotification pointing at a never-shown toast after the previous
+                // valid one was already removed.
+                notification.Enqueue(Meta.XR.Editor.Id.Origins.Component);
+                _scanFinishedNotification = notification;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[HRT] Could not show completion notification: {ex.Message}");
+            }
+        }
+
+        private void OnDestroy()
+        {
+            // Clear the scan-finished toast when the tool tab is closed so a stale toast
+            // pointing at a gone window doesn't linger (its CTA would otherwise no-op).
+            try { _scanFinishedNotification?.Remove(Meta.XR.Editor.Id.Origins.Self); }
+            catch { }
+            _scanFinishedNotification = null;
         }
 
         private void SaveStateToPrefs()
@@ -846,7 +965,6 @@ namespace Meta.HandReadinessTool.Editor
                     _issues = wrapper?.Items ?? new List<IssueData>();
                     _isScanComplete = true;
                     _currentState = savedState;
-                    Debug.Log($"[HRT] Restored state {savedState} with {_issues.Count} issues after domain reload");
 
                     HandReadinessTelemetry.SendEvent(
                         TelemetryConstants.FalcoEventName.StateRestored,
@@ -914,8 +1032,7 @@ namespace Meta.HandReadinessTool.Editor
                         TelemetryConstants.FalcoEventName.WelcomeGetStartedClicked,
                         isEssential: true);
                     OnStartScan();
-                }
-            ));
+                }));
         }
 
         private void RenderCheckTypeScreen()
@@ -948,7 +1065,27 @@ namespace Meta.HandReadinessTool.Editor
                         SetState(ToolState.Scanning);
                         RunScan();
                     }
-                }
+                },
+                buildAiPrompt: () => KnowledgeLoader.BuildCompletePrompt(includeJsonResponseFormat: false),
+                onHowItWorksToggled: expanded =>
+                {
+                    if (expanded)
+                    {
+                        HandReadinessTelemetry.SendEvent(
+                            TelemetryConstants.FalcoEventName.AiHowItWorksExpanded);
+                    }
+                },
+                onRunItYourselfToggled: expanded =>
+                {
+                    if (expanded)
+                    {
+                        HandReadinessTelemetry.SendEvent(
+                            TelemetryConstants.FalcoEventName.AiRunItYourselfExpanded);
+                    }
+                },
+                onPromptCopied: () =>
+                    HandReadinessTelemetry.SendEvent(
+                        TelemetryConstants.FalcoEventName.AiPromptCopied)
             ));
         }
 
@@ -996,10 +1133,16 @@ namespace Meta.HandReadinessTool.Editor
             var phases = BuildScanPhases();
 
             string currentCheckName;
+            string aiActivityText = null;
 
             if (_isAIScanInProgress)
             {
-                currentCheckName = "AI is analyzing your project for hand tracking opportunities...";
+                currentCheckName = AiAnalyzingStatus;
+                aiActivityText = BuildAiActivityLine();
+            }
+            else if (_isCompilingReport)
+            {
+                currentCheckName = "Compiling your readiness report...";
             }
             else
             {
@@ -1025,7 +1168,9 @@ namespace Meta.HandReadinessTool.Editor
                 // Scanning's Back returns to whichever screen the user came
                 // from: ProjectDescription on the AI path, CheckType on Standard.
                 onBack: OnScanningBack,
-                errorMessage: _lastAIError
+                errorMessage: _lastAIError,
+                aiActivityText: aiActivityText,
+                aiProviderName: _useAI ? _aiProviderLabel : null
             ));
         }
 
@@ -1037,11 +1182,14 @@ namespace Meta.HandReadinessTool.Editor
         {
             if (_isAIScanInProgress)
             {
+                // Invalidate the in-flight scan so its late async continuation is dropped.
+                _aiScanGeneration++;
                 _ = AgentBridgeAPI.CancelCurrentOperationAsync(
                     new CallerIdentity(HandReadinessConstants.ToolIdentifier));
                 _aiProgressAnimator?.Pause();
                 _aiProgressAnimator = null;
                 _isAIScanInProgress = false;
+                StopAIProgressTracking();
 
                 EmitScanCompleted(
                     success: false,
@@ -1056,7 +1204,7 @@ namespace Meta.HandReadinessTool.Editor
         private List<ScanPhaseInfo> BuildScanPhases()
         {
             string analysisSubtitle = _useAI
-                ? "AI is reviewing your code for hand-tracking opportunities"
+                ? $"{_aiProviderLabel} is reviewing your code for device readiness opportunities"
                 : "Scanning scripts for controller-only patterns";
 
             var phases = new List<ScanPhaseInfo>
@@ -1080,6 +1228,7 @@ namespace Meta.HandReadinessTool.Editor
                     Title = _isScanComplete ? "Analyzed project for migration" : "Analyzing project for migration",
                     Description = analysisSubtitle,
                     Status = _isScanComplete ? ScanPhaseStatus.Completed
+                           : _isAIScanInProgress ? ScanPhaseStatus.InProgress
                            : _scanProgress >= 0.5f ? (_scanProgress >= 0.75f ? ScanPhaseStatus.Completed : ScanPhaseStatus.InProgress) : ScanPhaseStatus.Pending
                 },
                 new ScanPhaseInfo
@@ -1087,6 +1236,8 @@ namespace Meta.HandReadinessTool.Editor
                     Title = _isScanComplete ? "Compiled readiness report" : "Compiling readiness report",
                     Description = "Building your recommendations",
                     Status = _isScanComplete ? ScanPhaseStatus.Completed
+                           : _isCompilingReport ? ScanPhaseStatus.InProgress
+                           : _isAIScanInProgress ? ScanPhaseStatus.Pending
                            : _scanProgress >= 0.75f ? (_scanProgress >= 1f ? ScanPhaseStatus.Completed : ScanPhaseStatus.InProgress) : ScanPhaseStatus.Pending
                 }
             };
@@ -1094,22 +1245,37 @@ namespace Meta.HandReadinessTool.Editor
             return phases;
         }
 
+        // A scan is stale once a newer scan supersedes it or the user leaves the
+        // scanning screen. StartAIScan awaits the full AI response, so a scan the
+        // user navigated away from must not write results or errors into the live
+        // screen when its await finally returns.
+        private bool IsScanStale(int scanGeneration) =>
+            scanGeneration != _aiScanGeneration || _currentState != ToolState.Scanning;
+
         private async Task StartAIScan()
         {
+            var scanGeneration = ++_aiScanGeneration;
             _lastAIError = null;
             _isAIScanInProgress = true;
             _aiScanStartTime = Time.realtimeSinceStartup;
-
-            Debug.Log("[HRT] AI scan starting — updating UI");
+            _aiStatusText = "";
+            ConversationEventBroker.MessageAdded += OnAIStreamingMessage;
 
             // Animate progress bar slowly from 70% to 95% during AI analysis
             _aiProgressAnimator = rootVisualElement.schedule.Execute(() =>
             {
-                if (_isAIScanInProgress && _scanProgress < 0.95f)
+                if (!_isAIScanInProgress) return;
+                if (_scanProgress < 0.90f)
                 {
-                    _scanProgress += 0.005f; // ~0.5% per tick, 200ms interval → fills in ~50s
-                    RenderScanningScreen();
+                    // Diminishing rate: fills quickly at first, slows asymptotically.
+                    // ~64% at 30s, ~73% at 60s, ~82% at 120s, ~87% at 180s, ~89% at 240s.
+                    var remaining = 0.90f - _scanProgress;
+                    _scanProgress += remaining * 0.003f;
                 }
+                // Update the progress bar + text in place rather than rebuilding the whole
+                // scanning screen: a full rebuild every 200ms recreated the footer's Back
+                // button mid-click, dropping clicks that straddled a tick.
+                UpdateScanningProgressInPlace();
             }).Every(200);
 
             RenderScanningScreen();
@@ -1123,6 +1289,7 @@ namespace Meta.HandReadinessTool.Editor
                 _lastAIError = "Failed to load AI prompt. Check that Knowledge files exist.";
                 Debug.LogWarning($"[HRT] {_lastAIError}");
                 _isAIScanInProgress = false;
+                StopAIProgressTracking();
                 RestorePriorAiOnFailure();
                 _aiSubscanSuccess = false;
                 _aiErrorKind = TelemetryConstants.ErrorKind.AiKnowledgeMissing;
@@ -1132,39 +1299,23 @@ namespace Meta.HandReadinessTool.Editor
                 return;
             }
 
-            Debug.Log($"[HRT] AI prompt built ({completePrompt.Length} chars), sending to AgentBridge...");
-
             // Send the prompt to the AI
             try
             {
                 AgentBridgeAPI.EnsureServiceInitialized();
                 AgentBridgeAPI.ClearConversation(new CallerIdentity(HandReadinessConstants.ToolIdentifier));
 
-                Debug.Log("[HRT] Awaiting AgentBridge SendPromptAsync...");
                 var success = await AgentBridgeAPI.SendPromptAsync(completePrompt, new CallerIdentity(HandReadinessConstants.ToolIdentifier));
 
-                // Dropped if the user left Scanning mid-flight (see OnScanningBack).
-                if (_currentState != ToolState.Scanning) return;
+                // Dropped if the user left Scanning mid-flight or a newer scan superseded
+                // this one (Back then Next); see OnScanningBack and IsScanStale.
+                if (IsScanStale(scanGeneration)) return;
 
                 if (success)
                 {
                     // SendPromptAsync awaits the full AI response via ProcessUserInputAsync,
                     // so by the time we get here the response should be in conversation history.
-                    var elapsed = Time.realtimeSinceStartup - _aiScanStartTime;
-                    Debug.Log($"[HRT] SendPromptAsync returned success after {elapsed:F1}s");
-
-                    var caller = new CallerIdentity(HandReadinessConstants.ToolIdentifier);
-                    var history = AgentBridgeAPI.GetConversationHistoryForCaller(caller);
-                    Debug.Log($"[HRT] Conversation history (for caller) has {history?.Count ?? 0} messages");
-                    if (history != null)
-                    {
-                        foreach (var msg in history)
-                        {
-                            Debug.Log($"[HRT]   {msg.MessageType}: {msg.Content?.Substring(0, Math.Min(msg.Content?.Length ?? 0, 100))}...");
-                        }
-                    }
-
-                    ProcessAIResponse();
+                    ProcessAIResponse(scanGeneration);
                 }
                 else
                 {
@@ -1174,6 +1325,7 @@ namespace Meta.HandReadinessTool.Editor
                     _isAIScanInProgress = false;
                     _aiProgressAnimator?.Pause();
                     _aiProgressAnimator = null;
+                    StopAIProgressTracking();
                     RestorePriorAiOnFailure();
                     _aiSubscanSuccess = false;
                     _aiErrorKind = TelemetryConstants.ErrorKind.AiSendReturnedFalse;
@@ -1184,13 +1336,15 @@ namespace Meta.HandReadinessTool.Editor
             }
             catch (Exception ex)
             {
-                // Dropped if the user left Scanning mid-flight (see OnScanningBack).
-                if (_currentState != ToolState.Scanning) return;
+                // Dropped if the user left Scanning mid-flight or a newer scan superseded
+                // this one (Back then Next); see OnScanningBack and IsScanStale.
+                if (IsScanStale(scanGeneration)) return;
 
                 _lastAIError = $"Failed to send prompt to AI: {ex.Message}";
                 _isAIScanInProgress = false;
                 _aiProgressAnimator?.Pause();
                 _aiProgressAnimator = null;
+                StopAIProgressTracking();
                 Debug.LogError($"[HRT] {_lastAIError}\n{ex.StackTrace}");
                 RestorePriorAiOnFailure();
                 _aiSubscanSuccess = false;
@@ -1216,28 +1370,29 @@ namespace Meta.HandReadinessTool.Editor
             _priorAiIssues = null;
         }
 
-        private void ProcessAIResponse()
+        private void ProcessAIResponse(int scanGeneration)
         {
-            // Dropped if the user left Scanning mid-flight (see OnScanningBack).
-            if (_currentState != ToolState.Scanning) return;
+            // Dropped if the user left Scanning mid-flight or a newer scan superseded
+            // this one (Back then Next); see OnScanningBack and IsScanStale.
+            if (IsScanStale(scanGeneration)) return;
 
             _isAIScanInProgress = false;
+            _isCompilingReport = true;
             _aiProgressAnimator?.Pause();
             _aiProgressAnimator = null;
-            _scanProgress = 1f;
-            var elapsed = Time.realtimeSinceStartup - _aiScanStartTime;
-            Debug.Log($"[HRT] ProcessAIResponse — AI took {elapsed:F1}s");
+            StopAIProgressTracking();
+            _scanProgress = 0.90f;
+
+            RenderScanningScreen();
 
             try
             {
                 var hrtCaller = new CallerIdentity(HandReadinessConstants.ToolIdentifier);
                 var history = AgentBridgeAPI.GetConversationHistoryForCaller(hrtCaller);
-                Debug.Log($"[HRT] Conversation history (for caller): {history?.Count ?? 0} messages");
                 if (history == null || history.Count == 0)
                 {
                     // Fallback: try global history
                     history = AgentBridgeAPI.GetConversationHistory();
-                    Debug.Log($"[HRT] Fallback global history: {history?.Count ?? 0} messages");
                 }
                 if (history == null || history.Count == 0)
                 {
@@ -1246,6 +1401,7 @@ namespace Meta.HandReadinessTool.Editor
                     // Still proceed to results with automated checks only;
                     // restore prior AI items so user mark-complete state survives.
                     RestorePriorAiOnFailure();
+                    _isCompilingReport = false;
                     _isScanComplete = true;
                     _aiSubscanSuccess = false;
                     _aiErrorKind = TelemetryConstants.ErrorKind.AiNoAssistantMessage;
@@ -1287,6 +1443,7 @@ namespace Meta.HandReadinessTool.Editor
                 {
                     _lastAIError = "AI response was empty.";
                     RestorePriorAiOnFailure();
+                    _isCompilingReport = false;
                     _isScanComplete = true;
                     _aiSubscanSuccess = false;
                     _aiErrorKind = TelemetryConstants.ErrorKind.AiResponseEmpty;
@@ -1319,19 +1476,27 @@ namespace Meta.HandReadinessTool.Editor
                     _aiIssuesResolvedFromPrior = parseResult.ResolvedFromPrior?.Count ?? 0;
                 }
 
+                _isCompilingReport = false;
+                _scanProgress = 1f;
                 _isScanComplete = true;
                 EmitScanCompleted(
                     success: true,
                     errorKind: _aiErrorKind,
                     errorMessage: !string.IsNullOrEmpty(_aiErrorKind) ? parseResult.ErrorMessage : null);
 
-                SetState(ToolState.Results);
+                RenderScanningScreen();
+                rootVisualElement.schedule.Execute(() =>
+                {
+                    if (!IsScanStale(scanGeneration))
+                        SetState(ToolState.Results);
+                }).StartingIn(1500);
             }
             catch (Exception ex)
             {
                 _lastAIError = $"Error processing AI response: {ex.Message}";
                 Debug.LogError($"[HRT] {_lastAIError}\n{ex.StackTrace}");
                 RestorePriorAiOnFailure();
+                _isCompilingReport = false;
                 _aiSubscanSuccess = false;
                 _aiErrorKind = TelemetryConstants.ErrorKind.Unknown;
                 _isScanComplete = true;
@@ -1343,9 +1508,57 @@ namespace Meta.HandReadinessTool.Editor
         private void RenderResultsScreen()
         {
             var issues = _issues ?? new List<IssueData>();
+            bool isAiReport = _scanActualScanType == TelemetryConstants.ScanType.Ai;
+            bool hasPendingAutomatedFix = _failedTasks != null && _failedTasks.Any(task =>
+                task.FixAction != null && issues.Any(issue =>
+                    !issue.IsFixed
+                    && issue.Category == IssueCategory.Automation
+                    && issue.TaskUid == task.Uid.ToString()));
+
+            // Non-empty only when the active provider can resume in a terminal (Claude Code, Gemini); else the banner stays hidden.
+            string aiResumeCommand = null;
+            if (isAiReport)
+            {
+                try
+                {
+                    var hrtCaller = new CallerIdentity(HandReadinessConstants.ToolIdentifier);
+                    var rawResume = AgentBridgeAPI.GetResumeCommandForCaller(hrtCaller);
+                    if (!string.IsNullOrEmpty(rawResume))
+                    {
+                        // Reduce the CLI to its bare command name (drop the absolute path):
+                        // split at the first flag so a path containing spaces stays intact, and
+                        // strip surrounding quotes so GetFileName doesn't keep a trailing ".
+                        int flagIdx = rawResume.IndexOf(" --", StringComparison.Ordinal);
+                        var bareResume = flagIdx > 0
+                            ? System.IO.Path.GetFileName(rawResume.Substring(0, flagIdx).Trim().Trim('"')) + rawResume.Substring(flagIdx)
+                            : rawResume;
+
+                        var projectRoot = System.IO.Path.GetDirectoryName(Application.dataPath)?.Replace('\\', '/');
+                        if (string.IsNullOrEmpty(projectRoot))
+                        {
+                            aiResumeCommand = bareResume;
+                        }
+                        else
+                        {
+                            // Prepend `cd` so the session resumes in the project dir. POSIX shells chain
+                            // with `&&`; Windows PowerShell (the Win10/11 default, and it rejects `&&`)
+                            // chains with `;` and its Set-Location switches drives. Single-quote the path
+                            // so shell metacharacters ($, `, ") in it stay literal.
+                            bool isWindows = Application.platform == RuntimePlatform.WindowsEditor;
+                            var quotedRoot = isWindows
+                                ? "'" + projectRoot.Replace("'", "''") + "'"
+                                : "'" + projectRoot.Replace("'", "'\\''") + "'";
+                            aiResumeCommand = $"cd {quotedRoot} {(isWindows ? ";" : "&&")} {bareResume}";
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[HRT] Could not resolve AI resume command: {ex.Message}");
+                }
+            }
 
             _contentContainer.Add(ResultsScreen.Create(
-                selectedDeviceName: GetSelectedDeviceName(),
                 issues: issues,
                 onViewDetails: OnAIFixIssue,
                 onApplyFix: OnFixIssue,
@@ -1354,11 +1567,11 @@ namespace Meta.HandReadinessTool.Editor
                 onExport: OnExportReport,
                 onCheckReadiness: () =>
                 {
-                    // Two roles for the primary action: re-scan to verify outstanding
-                    // work, or advance to the post-readiness Confirmation screen once
-                    // every recommendation is resolved. The button label mirrors this
-                    // distinction in ResultsScreen.CreateFooter.
-                    bool allComplete = issues.Count > 0 && issues.All(i => i.IsFixed);
+                    // Two roles for the primary action: re-scan to verify outstanding work, or
+                    // advance to the Confirmation screen once every recommendation is resolved
+                    // (label mirrors this in ResultsScreen.CreateFooter). An empty list means the
+                    // project is already ready → treat as complete so the button confirms readiness.
+                    bool allComplete = issues.All(i => i.IsFixed);
                     if (allComplete)
                     {
                         HandReadinessTelemetry.SendEvent(
@@ -1388,18 +1601,26 @@ namespace Meta.HandReadinessTool.Editor
                             TelemetryConstants.AnnotationType.Source,
                             TelemetryConstants.Source.ReanalyzeLink),
                         isEssential: true);
-                    // Full re-analysis from scratch
+                    // Rerun the full configured scan. Prior recommendations are retained only
+                    // so the fresh AI/regex results can reconcile completed and removed items.
                     SetState(ToolState.Scanning);
                     RunScan();
                 },
-                onApplyAllAutomated: OnFixAllAuto
+                onApplyAllAutomated: hasPendingAutomatedFix ? OnFixAllAuto : null,
+                onMarkAllComplete: OnMarkAllComplete,
+                aiResumeCommand: aiResumeCommand,
+                aiTokensSummary: isAiReport ? FormatAiTokensUsedPrefix() : null,
+                isAiReport: isAiReport,
+                onResumeCommandCopied: () =>
+                    HandReadinessTelemetry.SendEvent(
+                        TelemetryConstants.FalcoEventName.AiSessionResumeCopied)
             ));
         }
 
         private void RenderConfirmationScreen()
         {
             int resolvedCount = _issues?.Count ?? 0;
-
+            _hasOvrManagerInScene = FindOvrManagerInScene() != null;
             _contentContainer.Add(ConfirmationScreen.Create(
                 totalResolvedCount: resolvedCount,
                 onClose: () =>
@@ -1418,14 +1639,71 @@ namespace Meta.HandReadinessTool.Editor
                         evt => evt.SetMetadata(
                             TelemetryConstants.AnnotationType.IssueCount, resolvedCount),
                         isEssential: true);
-                    EditorApplication.ExecuteMenuItem("Meta/Tools/Building Blocks");
+                    EditorApplication.ExecuteMenuItem("Window/Meta/Tools/Building Blocks");
                     Close();
+                },
+                hasOvrManager: _hasOvrManagerInScene,
+                onOpenFovSimulationSettings: () =>
+                {
+                    OVRManager manager = FindOvrManagerInScene();
+                    if (manager != null)
+                    {
+                        OVRManagerEditor.HighlightFovSimulationSetting(manager);
+                    }
+                    else
+                    {
+                        RenderCurrentState();
+                        ShowNotification(new GUIContent(
+                            "No OVRManager was found. Use Oculus Runtime Settings or Immersive Debugger instead."));
+                    }
                 }));
+        }
+
+        private static OVRManager FindOvrManagerInScene() =>
+            UnityEngine.Object.FindFirstObjectByType<OVRManager>(FindObjectsInactive.Include);
+
+        private void OnHierarchyChanged()
+        {
+            if (_currentState != ToolState.Confirmation)
+            {
+                return;
+            }
+
+            bool hasOvrManager = FindOvrManagerInScene() != null;
+            if (hasOvrManager == _hasOvrManagerInScene)
+            {
+                return;
+            }
+
+            _hasOvrManagerInScene = hasOvrManager;
+            RenderCurrentState();
         }
 
         // RenderUpdatingScreen removed — Results is now the final screen
 
-        private string GetSelectedDeviceName() => HandReadinessConstants.DeviceName;
+        // Resolved AI provider display name for status copy on the scanning screen.
+        // Falls back to a generic label when AgentBridge is disabled or the active
+        // service name is unavailable ("None").
+        private string GetAiProviderLabel()
+        {
+            try
+            {
+                if (!AgentBridgeSettings.IsEnabled)
+                {
+                    return DefaultAiProviderLabel;
+                }
+                AgentBridgeAPI.EnsureServiceInitialized();
+                var name = AgentBridgeAPI.GetCurrentServiceName();
+                return string.IsNullOrEmpty(name) || name == "None"
+                    ? DefaultAiProviderLabel
+                    : name;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[HRT] Could not resolve AI provider name: {ex.Message}");
+                return DefaultAiProviderLabel;
+            }
+        }
 
         private void RunAutoFixes()
         {
@@ -1454,6 +1732,7 @@ namespace Meta.HandReadinessTool.Editor
                 filter: tasks => tasks.Where(t => tasksToFix.Any(ft => ft.Uid == t.Uid)).ToList(),
                 logMessages: OVRProjectSetup.LogMessages.Changed,
                 blocking: true,
+                allowHiddenGroupTasks: true,
                 onCompleted: _ =>
                 {
                     foreach (var issue in _issues)
@@ -1492,6 +1771,21 @@ namespace Meta.HandReadinessTool.Editor
         // Results-row overflow "Mark as complete" action — mirrors the details popup.
         private void OnMarkIssueComplete(IssueData issue)
         {
+            MarkIssueComplete(issue);
+            RenderCurrentState();
+        }
+
+        private void OnMarkAllComplete()
+        {
+            foreach (var issue in (_issues ?? new List<IssueData>()).Where(issue => !issue.IsFixed))
+            {
+                MarkIssueComplete(issue);
+            }
+            RenderCurrentState();
+        }
+
+        private static void MarkIssueComplete(IssueData issue)
+        {
             issue.IsFixed = true;
             HandReadinessTelemetry.SendEvent(
                 TelemetryConstants.FalcoEventName.IssueMarkedComplete,
@@ -1502,7 +1796,6 @@ namespace Meta.HandReadinessTool.Editor
                     evt.SetMetadata(TelemetryConstants.AnnotationType.Category, CategoryName(issue.Category));
                 },
                 isEssential: true);
-            RenderCurrentState();
         }
 
         private void OnFixIssue(IssueData issue)
@@ -1543,6 +1836,7 @@ namespace Meta.HandReadinessTool.Editor
             try
             {
                 OVRProjectSetup.FixTask(buildTarget, task, OVRProjectSetup.LogMessages.Changed, blocking: true,
+                    allowHiddenGroupTasks: true,
                     onCompleted: _ =>
                     {
                         fixStopwatch.Stop();
@@ -1609,9 +1903,9 @@ namespace Meta.HandReadinessTool.Editor
         private void OnExportReport()
         {
             var path = EditorUtility.SaveFilePanel(
-                "Export Hands Optimization Report",
+                "Export Device Readiness Report",
                 "",
-                $"HandsOptimizationReport_{GetSelectedDeviceName()}",
+                "DeviceReadinessReport",
                 "md");
 
             if (string.IsNullOrEmpty(path))
@@ -1629,12 +1923,10 @@ namespace Meta.HandReadinessTool.Editor
             }
 
             var sb = new System.Text.StringBuilder();
-            var deviceName = GetSelectedDeviceName();
 
-            sb.AppendLine($"# Hands Optimization Report — {deviceName}");
+            sb.AppendLine("# Device Readiness Report");
             sb.AppendLine();
             sb.AppendLine($"**Generated:** {System.DateTime.Now:yyyy-MM-dd HH:mm}");
-            sb.AppendLine($"**Target:** {deviceName}");
             sb.AppendLine();
 
             if (_issues == null || _issues.Count == 0)
@@ -1727,8 +2019,6 @@ namespace Meta.HandReadinessTool.Editor
             {
                 System.IO.File.WriteAllText(path, sb.ToString());
                 EditorUtility.DisplayDialog("Export Complete", $"Report saved to:\n{path}", "OK");
-                Debug.Log($"[HRT] Report exported to: {path}");
-
                 int unfixed = _issues?.Count(i => !i.IsFixed) ?? 0;
                 int total = _issues?.Count ?? 0;
                 HandReadinessTelemetry.SendEvent(
@@ -1780,6 +2070,7 @@ namespace Meta.HandReadinessTool.Editor
                 filter: tasks => tasks.Where(t => tasksToFix.Any(ft => ft.Uid == t.Uid)).ToList(),
                 logMessages: OVRProjectSetup.LogMessages.Changed,
                 blocking: true,
+                allowHiddenGroupTasks: true,
                 onCompleted: _ =>
                 {
                     int successCount = 0;
@@ -1806,6 +2097,147 @@ namespace Meta.HandReadinessTool.Editor
                         isEssential: true);
                     RenderCurrentState();
                 });
+        }
+
+        private void OnAIStreamingMessage(ConversationMessage message)
+        {
+            if (!_isAIScanInProgress || _currentState != ToolState.Scanning) return;
+            if (message.CallerId != HandReadinessConstants.ToolIdentifier) return;
+
+            if (message.MessageType == "tool_use" && !string.IsNullOrEmpty(message.ToolName))
+            {
+                _aiStatusText = FormatAIToolActivity(message);
+            }
+        }
+
+        private static string FormatAIToolActivity(ConversationMessage message)
+        {
+            var content = message.Content ?? "";
+            var bracketEnd = content.IndexOf(']');
+            if (bracketEnd < 0)
+                return content.Length > 80 ? content.Substring(0, 77) + "..." : content;
+
+            var context = content.Substring(bracketEnd + 1).Trim();
+            if (context.StartsWith("(") && context.EndsWith(")"))
+                context = context.Substring(1, context.Length - 2);
+
+            switch (message.ToolName)
+            {
+                case "Read":
+                    return $"Reading {ShortenPath(context)}";
+                case "Bash":
+                    if (string.IsNullOrEmpty(context)) return "Running analysis command...";
+                    return context.Length > 70 ? context.Substring(0, 67) + "..." : context;
+                case "Grep":
+                    if (string.IsNullOrEmpty(context)) return "Searching project...";
+                    return $"Searching: {(context.Length > 60 ? context.Substring(0, 57) + "..." : context)}";
+                case "Glob":
+                    return "Scanning project structure...";
+                case "Edit":
+                case "Write":
+                    return "Processing analysis results...";
+                case "search_files":
+                    return "Searching project files...";
+                case "ToolSearch":
+                    return "Loading analysis tools...";
+                default:
+                    if (string.IsNullOrEmpty(context))
+                        return $"Using {message.ToolName}...";
+                    return context.Length > 70 ? context.Substring(0, 67) + "..." : context;
+            }
+        }
+
+        private static string ShortenPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "project files...";
+            var fileName = System.IO.Path.GetFileName(path);
+            if (string.IsNullOrEmpty(fileName)) return "project files...";
+            var dir = System.IO.Path.GetDirectoryName(path);
+            var parentDir = string.IsNullOrEmpty(dir) ? null : System.IO.Path.GetFileName(dir);
+            if (!string.IsNullOrEmpty(parentDir))
+                return $"{parentDir}/{fileName}";
+            return fileName;
+        }
+
+        private void StopAIProgressTracking()
+        {
+            ConversationEventBroker.MessageAdded -= OnAIStreamingMessage;
+            _aiStatusText = "";
+        }
+
+        private string FormatAIElapsedTime()
+        {
+            var elapsed = Time.realtimeSinceStartup - _aiScanStartTime;
+            var mins = (int)(elapsed / 60);
+            var secs = (int)(elapsed % 60);
+            return mins > 0 ? $"Elapsed: {mins}m {secs:D2}s" : $"Elapsed: {secs}s";
+        }
+
+        private string BuildAiActivityLine()
+        {
+            var activity = !string.IsNullOrEmpty(_aiStatusText) ? _aiStatusText : "Starting...";
+            return $"{activity} · {FormatAIElapsedTime()}";
+        }
+
+        // "12.3k tokens used. " prefix for the results-page resume banner, shown when the
+        // active provider reported usage. Surfaced on the results page rather than the live
+        // scanning line because most providers (codex, gemini) report their total only at
+        // the end of the turn, so a per-line counter would sit empty for the whole scan.
+        // Empty when no tokens were counted.
+        private static string FormatAiTokensUsedPrefix()
+        {
+            try
+            {
+                var usage = AgentBridgeAPI.GetUsageForCaller(
+                    new CallerIdentity(HandReadinessConstants.ToolIdentifier));
+                var total = usage?.TotalTokens ?? 0;
+                if (total <= 0)
+                {
+                    return "";
+                }
+                string display;
+                if (total >= 999_500)
+                {
+                    display = $"{total / 1_000_000.0:0.0}M";
+                }
+                else if (total >= 1000)
+                {
+                    display = $"{total / 1000.0:0.0}k";
+                }
+                else
+                {
+                    display = total.ToString();
+                }
+                return $"{display} tokens used. ";
+            }
+            catch (Exception ex)
+            {
+                UnityEngine.Debug.LogWarning($"[HRT] Failed to read AI token usage: {ex.Message}");
+                return "";
+            }
+        }
+
+        // Mutate the existing progress bar + status lines rather than rebuilding the screen,
+        // so the footer's Back button survives across animator ticks. Falls back to a full
+        // render if the screen elements aren't built yet (first tick).
+        private void UpdateScanningProgressInPlace()
+        {
+            var fill = _contentContainer.Q<VisualElement>(ScanningScreen.ProgressFillName);
+            var statusLabel = _contentContainer.Q<Label>(ScanningScreen.StatusLabelName);
+            if (fill == null || statusLabel == null)
+            {
+                RenderScanningScreen();
+                return;
+            }
+
+            fill.style.width = Length.Percent(Mathf.Max(_scanProgress * 100f, 3f));
+            statusLabel.text = AiAnalyzingStatus;
+
+            var activityLabel = _contentContainer.Q<Label>(ScanningScreen.ActivityLabelName);
+            if (activityLabel != null)
+            {
+                activityLabel.text = BuildAiActivityLine();
+            }
         }
 
         private void OnDone()

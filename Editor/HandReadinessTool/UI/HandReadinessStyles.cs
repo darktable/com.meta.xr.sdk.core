@@ -152,15 +152,45 @@ namespace Meta.HandReadinessTool.Editor.UI
             public const string Description = "hrt-option-card__description";
         }
 
+        public static class AiInfo
+        {
+            public const string Section = "hrt-ai-info";
+            public const string Intro = "hrt-ai-info__intro";
+            public const string Step = "hrt-ai-step";
+            public const string StepNumber = "hrt-ai-step__number";
+            public const string StepNumberLabel = "hrt-ai-step__number-label";
+            public const string StepBody = "hrt-ai-step__body";
+            public const string StepTitle = "hrt-ai-step__title";
+            public const string StepDesc = "hrt-ai-step__desc";
+            public const string OrDivider = "hrt-or-divider";
+            public const string OrDividerLine = "hrt-or-divider__line";
+            public const string OrDividerLabel = "hrt-or-divider__label";
+        }
+
         public static class Text
         {
             public const string Primary = "hrt-text-primary";
             public const string Link = "hrt-text-link";
         }
 
+        public static class DocLink
+        {
+            public const string Root = "hrt-doc-link";
+            public const string Icon = "hrt-doc-link__icon";
+        }
+
         public static class Divider
         {
             public const string Vertical = "hrt-vertical-divider";
+        }
+
+        public static class ResumeBanner
+        {
+            public const string Root = "hrt-resume-banner";
+            public const string Row = "hrt-resume-banner__row";
+            public const string Description = "hrt-resume-banner__description";
+            public const string Copy = "hrt-resume-copy";
+            public const string CopyCopied = "hrt-resume-copy--copied";
         }
     }
 }

@@ -32,10 +32,14 @@ namespace Meta.XR.Editor.UserInterface
 
         }
 
-        public static async Task<DownloadResult<T>> Create(string fileName, ulong contentId, TimeSpan? cacheDuration = null)
+        public static async Task<DownloadResult<T>> Create(string fileName, ulong contentId, TimeSpan? cacheDuration = null, bool clearCache = false)
         {
             var downloader = new RemoteJsonContentDownloader(fileName, contentId)
                 .WithCacheDuration(cacheDuration ?? TimeSpan.FromDays(1));
+            if (clearCache)
+            {
+                downloader.ClearCache();
+            }
 
             var result = await downloader.Fetch();
 

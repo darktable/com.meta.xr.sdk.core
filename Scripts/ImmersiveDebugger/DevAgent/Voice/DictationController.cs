@@ -26,7 +26,7 @@ using UnityEngine;
 
 namespace Meta.XR.ImmersiveDebugger.DevAgent
 {
-    internal class DictationController : MonoBehaviour
+    internal class DictationController : MonoBehaviour, IDictationSource
     {
         [SerializeField]
         internal AppDictationExperience experience;
@@ -52,11 +52,11 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         [DebugMember(Category = "Voice Integration")]
         private float _currentMicLevel;
 
-        // Events for live transcription
-        internal event Action<string> OnPartialTranscriptionUpdate;
-        internal event Action<string> OnTranscriptionFinalized;
+        // Events for live transcription (public to satisfy IDictationSource implicit implementation).
+        public event Action<string> OnPartialTranscriptionUpdate;
+        public event Action<string> OnTranscriptionFinalized;
         // Fired when the dictation service / Wit request fails (e.g. auth/quota/network).
-        internal event Action<string> OnDictationError;
+        public event Action<string> OnDictationError;
 
         [DebugMember(Category = "Voice Integration")]
         private string _lastEvent;
@@ -102,12 +102,12 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         }
 
         [DebugMember(Category = "Voice Integration")]
-        internal void Toggle()
+        public void Toggle()
         {
             Toggle(!_sessionActive);
         }
 
-        internal void Toggle(bool activate)
+        public void Toggle(bool activate)
         {
             if (activate)
             {
@@ -150,7 +150,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         /// cleared or the headset is doffed mid-dictation, so a stale utterance is not sent and the
         /// session does not stay stuck active.
         /// </summary>
-        internal void Cancel()
+        public void Cancel()
         {
             if (!_sessionActive)
             {

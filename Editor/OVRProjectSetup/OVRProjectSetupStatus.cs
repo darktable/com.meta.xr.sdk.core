@@ -65,7 +65,8 @@ internal static class OVRProjectSetupStatus
     {
         var tasks = OVRProjectSetup.GetTasks(buildTargetGroup);
         var outstandingTasks = tasks
-            .Where(task => IsOutstanding(task, buildTargetGroup))
+            .Where(task => IsOutstanding(task, buildTargetGroup)
+                           && OVRProjectSetup.IsTaskVisibleInProjectSetupTool(task))
             .ToList();
 
         var highestLevel = ComputeHighestFixLevel(outstandingTasks, buildTargetGroup);

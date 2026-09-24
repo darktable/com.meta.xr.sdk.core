@@ -2,14 +2,8 @@
 name: hz-meta-xr-operator
 description: Drives Meta Quest and Horizon OS XR apps from an AI agent via the Meta XR Operator OpenXR API layer and MCP tools, including setup, head-pose control, controller input, and runtime verification.
 allowed-tools:
+  - Bash(metavr:*)
   - Bash(hzdb:*)
-tags:
-  - agentic-xr
-  - openxr
-  - mcp
-  - vr
-  - ar
-  - runtime
 ---
 
 # Meta XR Operator Usage
@@ -20,20 +14,25 @@ Meta XR Operator is an OpenXR API Layer that gives AI agents the ability to perc
 
 ## Setup
 
-Meta XR Operator is available as an MCP server. To setup:
+Meta XR Operator is available as tools within an MCP server. If the tools are unavailable, prompt the user to do one of the following:
 
-- **If HZDB v1.3.0+ is installed as an MCP server but the Meta XR Operator tools (e.g., `openxr_*`) are not available**, run the **"install meta xr operator mcp proxy"** tool exposed by HZDB.
-- Otherwise, prompt the user to follow steps within the Meta XR Core SDK's AI Tools window in Unity to set up Meta XR Operator.
+- If using Unity, follow steps within the Meta XR Core SDK's AI Tools Setup window to install the XR Operator MCP Server
+- Download the standalone Meta XR Operator package from Meta Developer Center, which contains the XR Operator MCP Server
+- Install Meta VR CLI v1.3.0+ from the Meta Quest Developer Hub (MQDH) or the Meta Developer Center, then install Meta XR Operator as a tool within the Meta VR CLI. The Meta XR Operator tools will then be federated and exposed directly within Meta VR CLI's MCP server.
+
+In Unity, prerequisites are the **Meta XR Core SDK** package and **Meta XR Simulator**; complete setup via the **Meta Project Setup Tool** / **Meta XR Settings** window and check Meta XR Operator's status in the toolbar under **Meta**. These skills ship in the Meta XR Core SDK at `Editor/MetaXROperator/Skills`.
 
 ## When to Use
 
 Use Meta XR Operator to **interact with a running XR application at runtime**:
+
 - **Iteration** — Launch the app, verify features, interact, then exit to make changes.
 - **Debugging** — Reproduce and investigate runtime bugs by inspecting poses, scene state, and visuals.
 - **Test Automation** — Programmatically verify features. See the **hz-meta-xr-operator-unity-test-mechanics** skill for more details.
 
 ## Orientation & Navigation
 
+- **Check for a scene-specific skill first.** Scenes sometimes ship their own skill in or near the scene's location. Before starting, take a brief moment to locate the scene and see if such a skill exists.
 - **Start by orienting yourself.** Use `openxr_get_head_pose` + `openxr_capture_composited_image` to see where you are.
 - **Use data before vision.** Query scene data (`get_scene_root_objects`, `get_children`, `get_world_pose`) to understand layout via coordinates, then confirm visually with screenshots.
 - **Don't guess positions** — always use `get_world_pose` for both target and rig. Check positions relative to the camera rig, not world origin.
@@ -52,6 +51,7 @@ For detailed coordinate math and controller positioning, see **hz-meta-xr-operat
 - **Smooth movements:** Use the `duration` parameter on `openxr_set_head_pose` and `openxr_set_controller_pose` for realistic motion.
 - **Controller input values:** Buttons are 0/1, Trigger/Grip are 0.0–1.0, Thumbstick is -1.0 to 1.0 on each axis.
 - **Hold inputs across frames** — setting an input to 1 and immediately to 0 may be missed by `Update()`.
+- For information about simulating hand tracking and gaze, see the **hz-meta-xr-operator-hand-tracking** skill.
 
 ## Common Pitfalls
 

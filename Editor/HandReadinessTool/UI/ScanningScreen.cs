@@ -73,7 +73,9 @@ namespace Meta.HandReadinessTool.Editor.UI
             bool isComplete = false,
             Action onNext = null,
             Action onBack = null,
-            string errorMessage = null)
+            string errorMessage = null,
+            string aiActivityText = null,
+            string aiProviderName = null)
         {
             var container = new VisualElement();
             container.style.flexGrow = 1;
@@ -89,17 +91,41 @@ namespace Meta.HandReadinessTool.Editor.UI
 
             // Header rhythm matches the Figma scanning frame: 16px above the
             // title, 2px to the subtitle, 32px below the header block.
-            var title = new Label("Analyzing your project files");
+            var title = new Label(HandReadinessScreenContentProvider.Get(
+                "scanning.title", "Analyzing your project files"));
             title.AddToClassList(RLDSConstants.Typography.Heading2);
             title.style.marginTop = RLDSConstants.Spacing.SizeMD;
             title.style.marginBottom = RLDSConstants.Spacing.Size4XS;
             title.style.whiteSpace = WhiteSpace.Normal;
             content.Add(title);
 
-            var subtitle = new Label("Read-only analysis. Your project won't be modified");
+            var subtitleText = string.IsNullOrEmpty(aiProviderName)
+                ? "Read-only analysis. Your project won't be modified."
+                : $"Read-only analysis. Your project won't be modified. {aiProviderName} will analyze your project.";
+            var subtitle = new Label(subtitleText);
             subtitle.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
-            subtitle.style.marginBottom = RLDSConstants.Spacing.Size2XL;
+            subtitle.style.whiteSpace = WhiteSpace.Normal;
             content.Add(subtitle);
+
+            // On the (longer) AI path, reassure the user they can background the window and
+            // a notification will fire when the scan finishes.
+            if (!string.IsNullOrEmpty(aiProviderName))
+            {
+                subtitle.style.marginBottom = RLDSConstants.Spacing.Size4XS;
+                var backgroundHint = new Label(HandReadinessScreenContentProvider.Get(
+                    "scanning.backgroundHint",
+                    "This will likely take a few minutes — you can background this window or park " +
+                    "the tab in your Editor, and we'll let you know when it's finished."));
+                backgroundHint.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+                backgroundHint.style.whiteSpace = WhiteSpace.Normal;
+                backgroundHint.style.marginTop = RLDSConstants.Spacing.SizeMD;
+                backgroundHint.style.marginBottom = RLDSConstants.Spacing.Size2XL;
+                content.Add(backgroundHint);
+            }
+            else
+            {
+                subtitle.style.marginBottom = RLDSConstants.Spacing.Size2XL;
+            }
 
             // ---- Phase rows ----
             // Figma status list: 8px above the first row, 16px below the last,
@@ -135,7 +161,7 @@ namespace Meta.HandReadinessTool.Editor.UI
             else
             {
                 content.Add(CreateDivider());
-                content.Add(CreateProgressBar(progress, currentStatusText));
+                content.Add(CreateProgressBar(progress, currentStatusText, aiActivityText));
             }
 
             container.Add(content);
@@ -239,7 +265,14 @@ namespace Meta.HandReadinessTool.Editor.UI
             return divider;
         }
 
-        private static VisualElement CreateProgressBar(float progress, string statusText)
+        /// <summary>Element name of the progress-bar fill, for in-place updates during the AI scan.</summary>
+        public const string ProgressFillName = "hrt-scan-progress-fill";
+        /// <summary>Element name of the primary status label, for in-place updates during the AI scan.</summary>
+        public const string StatusLabelName = "hrt-scan-status-label";
+        /// <summary>Element name of the secondary activity label, for in-place updates during the AI scan.</summary>
+        public const string ActivityLabelName = "hrt-scan-activity-label";
+
+        private static VisualElement CreateProgressBar(float progress, string statusText, string aiActivityText = null)
         {
             var container = new VisualElement();
             // Figma footer: 24px above the progress bar, 16px to the status text.
@@ -249,15 +282,27 @@ namespace Meta.HandReadinessTool.Editor.UI
             barBg.AddToClassList(HandReadinessStyles.Progress.Track);
 
             var fill = new VisualElement();
+            fill.name = ProgressFillName;
             fill.AddToClassList(HandReadinessStyles.Progress.Fill);
             fill.style.width = Length.Percent(Mathf.Max(progress * 100f, 3f));
             barBg.Add(fill);
             container.Add(barBg);
 
             var label = new Label(statusText ?? "Scanning packages....");
+            label.name = StatusLabelName;
             label.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
             label.style.marginTop = RLDSConstants.Spacing.SizeMD;
             container.Add(label);
+
+            if (!string.IsNullOrEmpty(aiActivityText))
+            {
+                var activityLabel = new Label(aiActivityText);
+                activityLabel.name = ActivityLabelName;
+                activityLabel.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+                activityLabel.style.marginTop = RLDSConstants.Spacing.Size3XS;
+                activityLabel.style.opacity = 0.6f;
+                container.Add(activityLabel);
+            }
 
             return container;
         }
@@ -281,11 +326,13 @@ namespace Meta.HandReadinessTool.Editor.UI
             row.Add(icon);
 
             var textCol = new VisualElement();
-            var label = new Label("Analysis complete");
+            var label = new Label(HandReadinessScreenContentProvider.Get(
+                "scanning.complete.title", "Analysis complete"));
             label.AddToClassList(RLDSConstants.Typography.Body1Label);
             textCol.Add(label);
 
-            var hint = new Label("Click \"Next\" to view recommendations");
+            var hint = new Label(HandReadinessScreenContentProvider.Get(
+                "scanning.complete.hint", "Click \"Next\" to view recommendations"));
             hint.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
             textCol.Add(hint);
 
@@ -298,19 +345,32 @@ namespace Meta.HandReadinessTool.Editor.UI
             var banner = new VisualElement();
             banner.AddToClassList(HandReadinessStyles.ErrorBanner.Root);
             banner.style.marginTop = RLDSConstants.Spacing.SizeXL;
+            // Never let a long provider error push the banner past the footer.
+            banner.style.flexShrink = 0;
 
-            var title = new Label("AI analysis failed");
+            var title = new Label(HandReadinessScreenContentProvider.Get(
+                "scanning.error.title", "AI analysis failed"));
             title.AddToClassList(RLDSConstants.Typography.Body1Label);
             title.AddToClassList(HandReadinessStyles.ErrorBanner.Title);
             title.style.marginBottom = RLDSConstants.Spacing.Size3XS;
             banner.Add(title);
 
+            // Provider errors can be many lines (e.g. a CLI stack dump); cap the height and let
+            // them scroll instead of overflowing the screen onto the Back/Next buttons.
+            var descScroll = new ScrollView(ScrollViewMode.Vertical);
+            descScroll.verticalScrollerVisibility = ScrollerVisibility.Auto;
+            descScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+            descScroll.style.maxHeight = 120;
+
             var desc = new Label(errorMessage);
             desc.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
             desc.style.whiteSpace = WhiteSpace.Normal;
-            banner.Add(desc);
+            descScroll.Add(desc);
+            banner.Add(descScroll);
 
-            var hint = new Label("Proceeding with automated checks only. Click \"Next\" to view results.");
+            var hint = new Label(HandReadinessScreenContentProvider.Get(
+                "scanning.error.hint",
+                "Proceeding with automated checks only. Click \"Next\" to view results."));
             hint.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
             hint.style.whiteSpace = WhiteSpace.Normal;
             hint.style.marginTop = RLDSConstants.Spacing.SizeXS;

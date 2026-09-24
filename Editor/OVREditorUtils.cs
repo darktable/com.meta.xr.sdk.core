@@ -56,8 +56,6 @@ internal static class OVREditorUtils
     {
         EditorApplication.update -= UpdateEditor;
         EditorApplication.update += UpdateEditor;
-
-        OVRUserSettingsProvider.Register("Toolbar", Dropdown.OnSettingsGUI);
     }
 
     internal static void UpdateEditor()

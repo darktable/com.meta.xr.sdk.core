@@ -20,12 +20,14 @@
 
 
 using System;
+using Meta.XR.FovSimulator;
 using Meta.XR.ImmersiveDebugger.Gizmo;
 using Meta.XR.ImmersiveDebugger.Manager;
 using Meta.XR.ImmersiveDebugger.UserInterface;
 using System.Diagnostics;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
+using FovSimulatorComponent = Meta.XR.FovSimulator.FovSimulator;
 using Object = UnityEngine.Object;
 
 namespace Meta.XR.ImmersiveDebugger
@@ -57,6 +59,9 @@ namespace Meta.XR.ImmersiveDebugger
 
             GameObject manager = new GameObject("ImmersiveDebuggerManager");
             manager.AddComponent<DebugManager>();
+            AttachFovSimulatorIfInspected(manager);
+            // The Meta XR Operator tool binder is added by the DevAgent AI-Assistant setup
+            // (LLMDialogPanelRegistrar), gated on the AI Assistant being enabled — not here.
 
             GameObject interfaceObject = new GameObject("ImmersiveDebuggerInterface");
             interfaceObject.transform.SetParent(manager.transform);
@@ -78,6 +83,37 @@ namespace Meta.XR.ImmersiveDebugger
             }
 
             Object.DontDestroyOnLoad(manager);
+        }
+
+        internal static void AttachFovSimulatorIfInspected(GameObject owner)
+        {
+            var assets = RuntimeSettings.Instance.InspectedDataAssets;
+            var enabled = RuntimeSettings.Instance.InspectedDataEnabled;
+            for (var i = 0; i < assets.Count; i++)
+            {
+                if (i >= enabled.Count || !enabled[i] || assets[i] == null)
+                {
+                    continue;
+                }
+
+                foreach (var inspectedMember in assets[i].InspectedMembers)
+                {
+                    inspectedMember.Initialize();
+                    if (!inspectedMember.Valid ||
+                        inspectedMember.MemberInfo.DeclaringType != typeof(FovSimulatorComponent))
+                    {
+                        continue;
+                    }
+
+                    FovSimulatorLoader.ApplyConfiguredSetting();
+                    if (Object.FindAnyObjectByType<FovSimulatorComponent>(FindObjectsInactive.Include) == null)
+                    {
+                        FovSimulatorComponent simulator = owner.AddComponent<FovSimulatorComponent>();
+                        simulator.enabled = false;
+                    }
+                    return;
+                }
+            }
         }
     }
 }

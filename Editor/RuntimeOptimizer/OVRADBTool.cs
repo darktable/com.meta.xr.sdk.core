@@ -34,11 +34,24 @@ namespace Meta.XR.RuntimeOptimizer.Editor
     /// <summary>Provides a wrapper around the Android Debug Bridge (ADB) command-line tool for managing devices and executing commands.</summary>
     public class OVRADBTool
     {
+        /// <summary>Exit code reported by <see cref="RunCommand"/> when a command exceeded its timeout and was terminated.</summary>
+        public const int TimedOutExitCode = -2;
+
+        /// <summary>How long a killed adb process is given to actually go away, in milliseconds.</summary>
+        private const int kPostKillGraceMs = 5000;
+
         public bool isReady;
 
         public string androidSdkRoot;
         public string androidPlatformToolsPath;
         public string adbPath;
+
+        /// <summary>
+        /// Timeout in milliseconds applied to every <see cref="RunCommand"/> call that does not supply its own.
+        /// Zero or negative waits indefinitely, which is the default so that inherently slow commands keep
+        /// working; callers running ADB on a thread that must stay responsive should set a bound.
+        /// </summary>
+        public int defaultTimeoutMs = 0;
 
         public OVRADBTool(string androidSdkRoot)
         {
@@ -189,9 +202,10 @@ namespace Meta.XR.RuntimeOptimizer.Editor
         /// <param name="outputString">The captured standard output of the process.</param>
         /// <param name="errorString">The captured standard error of the process.</param>
         /// <param name="stdIn">Optional string to write to the process standard input.</param>
-        /// <returns>The exit code of the ADB process, or <c>-1</c> if the tool is not ready.</returns>
+        /// <param name="timeoutMs">Maximum time to wait for the command, overriding <see cref="defaultTimeoutMs"/>. Zero or negative uses <see cref="defaultTimeoutMs"/>.</param>
+        /// <returns>The exit code of the ADB process, <c>-1</c> if the tool is not ready, or <see cref="TimedOutExitCode"/> if the command timed out.</returns>
         public int RunCommand(string[] arguments, WaitingProcessToExitCallback waitingProcessToExitCallback,
-            out string outputString, out string errorString, string stdIn = null)
+            out string outputString, out string errorString, string stdIn = null, int timeoutMs = 0)
         {
             int exitCode = -1;
 
@@ -234,28 +248,82 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 StreamIn.Close();
             }
 
+            int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : defaultTimeoutMs;
+            bool timedOut = false;
+
             try
             {
+                Stopwatch timer = Stopwatch.StartNew();
                 do
                 {
                     if (waitingProcessToExitCallback != null)
                     {
                         waitingProcessToExitCallback();
                     }
+
+                    // The deadline has to be enforced inside this loop: the bounded WaitForExit below
+                    // is not reached until the process has already exited on its own. A wedged
+                    // device-side service leaves adb blocked forever, and most callers here run on the
+                    // editor's main thread, where that is an unrecoverable hang.
+                    if (effectiveTimeoutMs > 0 && timer.ElapsedMilliseconds >= effectiveTimeoutMs &&
+                        !process.HasExited)
+                    {
+                        timedOut = true;
+                        break;
+                    }
                 } while (!process.WaitForExit(100));
-                // don't get stock forever if something goes wrong
-                process.WaitForExit(60 * 1000);
+
+                if (timedOut)
+                {
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // The process exited between the deadline check and the kill.
+                    }
+
+                    // Deliberately short: the caller was promised a deadline, so a child that is
+                    // slow to die must not add another minute on top of it.
+                    process.WaitForExit(kPostKillGraceMs);
+                }
+                else
+                {
+                    // The loop above only exits once the process is gone, so this returns at once.
+                    // It stays bounded so a stuck teardown cannot reintroduce the hang.
+                    process.WaitForExit(60 * 1000);
+                }
             }
             catch (Exception e)
             {
                 Debug.LogWarningFormat("[OVRADBTool.RunCommand] exception {0}", e.Message);
             }
 
-            exitCode = process.ExitCode;
+            // Stop the redirected-output handlers before the builders are read. They run on
+            // thread-pool threads and StringBuilder is not thread-safe, so a late Append racing
+            // ToString() could throw -- reachable now that a command can be killed mid-stream.
+            try
+            {
+                process.CancelOutputRead();
+                process.CancelErrorRead();
+            }
+            catch (InvalidOperationException)
+            {
+                // Raised when the asynchronous reads have already finished; nothing to cancel.
+            }
+
+            exitCode = timedOut ? TimedOutExitCode : process.ExitCode;
 
             process.Close();
             outputString = outputStringBuilder?.ToString() ?? string.Empty;
             errorString = errorStringBuilder?.ToString() ?? string.Empty;
+
+            if (timedOut)
+            {
+                errorString +=
+                    $"adb command timed out after {effectiveTimeoutMs} ms and was terminated: adb {args}{Environment.NewLine}";
+            }
             outputStringBuilder = null;
             errorStringBuilder = null;
 

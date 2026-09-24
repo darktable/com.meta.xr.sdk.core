@@ -62,6 +62,7 @@ namespace Meta.XR.Editor
             public const string InstallAndSetup = "Install and set up AI tools";
             public const string ConfigureFirewall = "Allow local network connections (Windows Firewall)";
             public const string InstallSkills = "Install project-level skills";
+            public const string ReviewProjectSetup = "Review Project Setup Tool";
         }
 
         internal static class Columns
@@ -70,13 +71,17 @@ namespace Meta.XR.Editor
             public const string AgenticHeading = "XR Operator";
             public const string AgenticDescription =
                 "Let your AI coding assistant write C# scripts, build scenes, and test " +
-                "in Meta XR Simulator from prompts.";
+                "in Meta XR Simulator from prompts. XR Operator is installed and served " +
+                "through the Meta VR CLI (metavr).";
 
             public const string BridgeBadge = "AI Agent Bridge";
             public const string BridgeHeading = "AI-powered XR tools";
             public const string BridgeDescription =
                 "Power Runtime optimizer, Immersive debugger, and Hands optimizer with tailored " +
                 "AI recommendations.";
+            public const string BridgeToolsNote =
+                "Immersive Debugger's in-headset assistant gets its debugging tools from Meta XR Operator. " +
+                "Set up the XR Operator card too so the assistant can act on your scene.";
 
             public const string RunCommandHelper =
                 "Run in your terminal to configure the connection between your AI coding assistant " +
@@ -86,6 +91,7 @@ namespace Meta.XR.Editor
         internal static class SubSteps
         {
             public const string InstallMcpProxy = "Install Meta XR Operator MCP Proxy";
+            public const string InstallXROperator = "Install Meta XR Operator (via Meta VR CLI)";
             public const string InstallBridge = "Install AI Agent Bridge";
             public const string ValidateBridgeConnection = "Validate AI Agent Bridge and Meta XR Operator Connection";
             public const string ConfigureFirewall = "Allow local network connections (Windows Firewall)";
@@ -103,6 +109,63 @@ namespace Meta.XR.Editor
             public const string NotConfigured = "Windows Firewall is not configured for local network connections";
         }
 
+        internal static class Device
+        {
+            // AgentBridge card: adb reverse (device -> host). The in-headset assistant connects out to the
+            // Remote Agent Server, so the device's port is reversed to this computer.
+            public const string ReverseHeading = "Headset connection";
+            public const string ReverseDescription =
+                "Only needed for the Immersive Debugger in-headset AI Assistant on Quest APK builds. " +
+                "Connect the headset to this computer with a USB cable.";
+            public const string ReverseButton = "Configure ADB reverse";
+            public const string Reversing = "Configuring ADB reverse";
+            public const string ReverseConfiguredFormat = "ADB reverse configured for {0} device(s) on {1}";
+
+            // XR Operator card: the on-device (Quest APK) setup, run as one action across every
+            // authorized device. The `debug.` system properties it sets are cleared by a headset reboot.
+            public const string QuestHeading = "Headset connection (Development builds only)";
+            public const string QuestDescription =
+                "Only needed for Quest APK builds. Connect the headset to this computer with a USB cable, " +
+                "and enable Development Build in Build Profiles. These device settings are cleared when " +
+                "the headset reboots, so run this again after a restart.";
+            public const string SetUpButton = "Set up headset";
+            public const string SettingUp = "Setting up headset";
+            public const string SetUpCompleteFormat = "Headset set up for {0} device(s)";
+
+            // Undo: puts every setting the setup applied back the way it was.
+            public const string UndoButton = "Undo setup";
+            public const string UndoingSetup = "Undoing headset setup";
+            public const string UndoCompleteFormat = "Headset settings restored on {0} device(s)";
+
+            // Checklist rows, in the order the steps run.
+            public const string ForwardItemFormat = "Forward MCP server port {0}";
+            public const string ExperimentalItem = "Enable experimental features";
+            public const string CaptureItem = "Request screen capture permission at app start";
+            public const string ProximityItem = "Disable proximity sensor (test off your face)";
+            public const string ItemFailedFormat = "{0} — {1}";
+
+            // Shared failure messages.
+            public const string AdbUnavailable =
+                "Android SDK (adb) not found. Set the Android SDK path in Preferences > External Tools.";
+            public const string NoDeviceDetected =
+                "No authorized device detected. Connect your Quest over USB and enable USB debugging.";
+            public const string DeviceUnauthorized =
+                "A device is connected but unauthorized. Accept the USB debugging prompt in the headset, then retry.";
+            public const string PartialFailureFormat =
+                "The ADB command failed on {0} device(s). Reconnect the device and retry.";
+            public const string TimedOut =
+                "ADB did not respond in time. Reconnect the headset (or restart the ADB server) and retry.";
+        }
+
+        internal static class ProjectSetup
+        {
+            public const string Description =
+                "Open Project Setup Tool and fix any outstanding rules to ensure the project is ready for XR development";
+            public const string OpenButton = "Open Project Setup Tool";
+            public const string OutstandingAIToolWarningFormat =
+                "{0} Project Setup Tool rules for AI tools features (e.g. Meta XR Operator) need fixing.";
+        }
+
         internal static class Registration
         {
             public const string EditorToolsLabel = "Editor tools";
@@ -115,8 +178,8 @@ namespace Meta.XR.Editor
         {
             public const string DocsLinkText = "OpenCode MCP setup docs";
             public const string ManualInstructions =
-                "Copy the Meta XR Operator proxy path above, and follow the OpenCode documentation " +
-                "to add it as a local MCP.";
+                "Run the command above in your terminal to add the Meta VR CLI's MCP server to " +
+                "OpenCode, or follow the OpenCode documentation to add it manually.";
         }
 
         internal static class Descriptions
@@ -127,6 +190,10 @@ namespace Meta.XR.Editor
                 "The MCP Proxy is a small binary that lets your AI coding assistant connect to " +
                 "the Meta XR Operator runtime tools. It is copied from the SDK into your home folder so " +
                 "AI clients can launch it directly.";
+            public const string InstallXROperatorViaCli =
+                "Meta XR Operator is installed through the Meta VR CLI (metavr). " +
+                "Your AI assistant connects to metavr's MCP server, which exposes the XR Operator " +
+                "runtime tools for inspecting and interacting with your running app.";
             public const string InstallBridge =
                 "Enable AI-powered features for Runtime Optimizer, Immersive Debugger, and Hands Optimizer " +
                 "by installing the AI Agent Bridge, which lets your AI coding assistant communicate with Meta XR SDK. " +
@@ -153,10 +220,16 @@ namespace Meta.XR.Editor
             public const string InstallBridge = "Install AI Agent Bridge";
             public const string InstallMcpProxy = "Install MCP Proxy";
             public const string ReinstallMcpProxy = "Reinstall MCP Proxy";
+            public const string UpdateMcpProxy = "Update MCP Proxy";
+            public const string DownloadMetaVrCli = "Download Meta VR CLI";
+            public const string InstallMetaVrCli = "Install Meta VR CLI";
+            public const string InstallXROperator = "Install XR Operator";
+            public const string ReinstallXROperator = "Reinstall XR Operator";
+            public const string UpdateXROperator = "Update XR Operator";
             public const string SetupServiceFormat = "Setup {0}";
             public const string RunCommand = "Run Command";
             public const string RunCommandBridgeDisabledTooltip = "Install AI Agent Bridge in Step 1 first";
-            public const string RunCommandProxyDisabledTooltip = "Install Meta XR Operator MCP Proxy in Step 1 first";
+            public const string RunCommandProxyDisabledTooltip = "Install Meta XR Operator in Step 1 first";
             public const string VerifyConnection = "Verify connection";
             public const string AdvancedSettingsShow = "Open advanced settings";
             public const string AdvancedSettingsHide = "Hide advanced settings";
@@ -177,6 +250,11 @@ namespace Meta.XR.Editor
             public const string BridgeNotInstalled = "AI Agent Bridge is not installed";
             public const string ProxyInstalled = "MCP Proxy installed";
             public const string ProxyNotInstalled = "MCP Proxy is not installed";
+            // Kept close in length to the ProxyInstalled/ProxyNotInstalled strings these replace —
+            // the status row is one line in a narrow column and wraps badly past ~30 characters.
+            public const string XROperatorInstalled = "XR Operator installed";
+            public const string XROperatorNotInstalled = "XR Operator is not installed";
+            public const string MetaVrCliNotInstalled = "Meta VR CLI is not installed";
             public const string AssistantConnectedFormat = "AI coding assistant connected: {0}";
             public const string AssistantConnectedWithSkillsFormat = "AI coding assistant connected: {0} ({1} skills installed)";
             public const string RuntimeToolsRegisteredFormat = "Runtime tools registered with {0}";
@@ -190,6 +268,11 @@ namespace Meta.XR.Editor
         {
             public const string Installing = "Installing";
             public const string InstallingProxy = "Installing MCP Proxy";
+            public const string InstallingXROperator = "Installing XR Operator";
+            // Covers the whole one-click State-A action (CLI install, then XR Operator). Named for
+            // the CLI because that phase dominates: it downloads and runs a full installer, while
+            // `tools install xroperator` finishes in a few seconds.
+            public const string InstallingMetaVrCli = "Installing Meta VR CLI";
             public const string Connecting = "Connecting";
             public const string Verifying = "Verifying";
         }
@@ -292,9 +375,29 @@ namespace Meta.XR.Editor
                 "Please stop the proxy process and try again.";
             public const string ProxyInstallExceptionFormat = "Failed to install MCP proxy:\n\n{0}";
             public const string ClientNotFoundFormat = "{0} not found. Is it installed and in your PATH?";
+            public const string AgentNotInstalledFormat =
+                "{0} was not detected on your system. Install it (or set its executable path in " +
+                "Meta XR > Preferences), then click \"Try again\".";
             public const string VerifyTimedOutFormat =
                 "{0} started but timed out. It may be checking MCP server health — try again.";
-            public const string NotRegisteredFormat = "meta-xr-operator is not registered with {0}";
+            // Transport-neutral: the McpProxy path registers the federated `metavr` server while
+            // DirectSSE still registers `meta-xr-operator`, so naming either one here would be
+            // wrong half the time.
+            public const string NotRegisteredFormat =
+                "The Meta XR Operator MCP server is not registered with {0}";
+            public const string MetaVrCliMissingForInstall =
+                "Meta VR CLI (metavr) was not found. Download and install it, then click again.";
+            public const string MetaVrCliInstallFailed =
+                "Meta VR CLI installation failed. See the Console for details, or install it " +
+                "manually from the Meta VR CLI prerequisites page.";
+            public const string MetaVrCliDirectInstallUnavailable =
+                "Meta VR CLI cannot be installed from here on this platform. Install it manually " +
+                "from the Meta VR CLI prerequisites page, then click again.";
+            public const string MetaVrCliOutdatedForInstall =
+                "Meta VR CLI (metavr) is out of date. Run \"metavr update\" in your terminal, " +
+                "then click again.";
+            public const string XROperatorInstallFailed = "XR Operator install failed: {0}";
+            public const string XROperatorUpdateFailed = "XR Operator update failed: {0}";
             public const string VerifyFailedFormat = "Verification failed: {0}";
             public const string SetupFailedFormat = "Setup failed: {0}";
             public const string RegistrationFailedFormat = "Failed to register with {0}: {1}";
@@ -308,12 +411,17 @@ namespace Meta.XR.Editor
 
         internal static class Links
         {
-            public const string QuickStartUrl = "https://developer.oculus.com/documentation/unity/agentic-xr-setup/";
-            public const string MetaXROperatorLearnMoreUrl = "https://developers.meta.com/horizon/documentation/unity/unity-agentic-xr/";
+            public const string QuickStartUrl = "https://developers.meta.com/horizon/documentation/unity/meta-xr-operator/getting-started/";
+            public const string MetaXROperatorLearnMoreUrl = "https://developers.meta.com/horizon/documentation/unity/meta-xr-operator/";
             public const string RuntimeOptimizerLearnMoreUrl = "https://developers.meta.com/horizon/documentation/unity/unity-quest-runtime-optimizer/";
             public const string ImmersiveDebuggerLearnMoreUrl = "https://developers.meta.com/horizon/documentation/unity/immersivedebugger-overview/";
-            public const string HandsOnlyOptimizerLearnMoreUrl = "https://developer.oculus.com/documentation/unity/hands-only-optimizer/";
+            public const string HandsOnlyOptimizerLearnMoreUrl = "https://developers.meta.com/horizon/documentation/unity/hands-optimizer/";
             public const string OpenCodeMcpDocsUrl = "https://opencode.ai/docs/mcp-servers/";
+
+            // Must match the landed Welcome card destinations (WelcomeSettings.MetaVrCliDownloadUrl /
+            // MetaVrCliDocsUrl) so both entry points send developers to the same instructions.
+            public const string MetaVrCliDownloadUrl = "https://github.com/meta-quest/agentic-tools#prerequisites";
+            public const string MetaVrCliDocsUrl = "https://github.com/meta-quest/agentic-tools#metavr-cli-quick-reference";
         }
     }
 }

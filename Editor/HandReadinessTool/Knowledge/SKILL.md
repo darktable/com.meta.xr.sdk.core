@@ -1,13 +1,15 @@
 ---
-name: hand-readiness
-description: Audits a Unity project for hand-readiness — finds controller-based interactions that need to migrate to hand tracking, suggests ISDK replacements, and produces a prioritized migration plan. Powers the Hand Readiness Tool (Editor) and runs anywhere the user asks about hand-readiness, controller-to-hands conversion, OVRInput replacement, ISDK adoption, or preparing a VR project for hands-only input.
+name: device-readiness
+description: Audits a Unity project for device readiness across two dimensions — input (finds controller-based interactions that need to migrate to hand tracking, suggests ISDK replacements, and produces a prioritized migration plan) and field of view (finds head-locked UI that would be clipped on a device with a narrower FoV). Powers the Device Readiness Check (Editor) and runs anywhere the user asks about device readiness, hand-tracking / controller-to-hands conversion, OVRInput replacement, ISDK adoption, preparing a VR project for hands-only input, or field-of-view / head-locked-UI clipping for a narrower-FoV device.
 ---
 
-# Hand Readiness
+# Device Readiness
 
 ## Context
 
-The target device is a hands-only Meta VR headset where hand tracking is the primary input method, not a fallback. Most existing Quest projects were built controller-first, so the work isn't just "replace button presses with gestures" — it's rethinking interaction design so hands feel natural instead of like a worse controller. A systematic scan matters: find every controller dependency, understand the gameplay intent behind it, and map it to the right ISDK pattern.
+This skill prepares a Unity project for the next generation of Meta XR device requirements across two dimensions: **input** (hand tracking as the primary input, not a fallback) and **field of view** (a device with a narrower FoV than current Quest headsets). The input workflow is immediately below; the field-of-view workflow is its own section further down.
+
+The target device treats hand tracking as the primary input method, not a fallback. Most existing Quest projects were built controller-first, so the work isn't just "replace button presses with gestures" — it's rethinking interaction design so hands feel natural instead of like a worse controller. A systematic scan matters: find every controller dependency, understand the gameplay intent behind it, and map it to the right ISDK pattern.
 
 ## Analysis Workflow
 
@@ -53,7 +55,7 @@ Rank suggestions by impact and effort:
 
 - **High Priority** — core gameplay interactions that use controller APIs and must be replaced (e.g. OVRInput-based grab, trigger-based shooting).
 - **Medium Priority** — secondary interactions on controller APIs (e.g. thumbstick scrolling, ray-based UI navigation).
-- **Low Priority** — enhancements for code that already uses hand tracking but could be improved (hover feedback, audio cues, two-hand support). Nice-to-haves, not required for hand-readiness.
+- **Low Priority** — enhancements for code that already uses hand tracking but could be improved (hover feedback, audio cues, two-hand support). Nice-to-haves, not required to be hand-ready.
 
 **Important.** If the project already uses ISDK hand tracking (`HandGrabInteractable`, `PokeInteractable`, etc.) and has no controller-dependent code, report that it is already hand-ready. Surface enhancements only as Low-priority items — don't treat them as required changes. A project that already works with hands should not receive a long list of improvement suggestions.
 
@@ -84,3 +86,54 @@ For detailed implementation patterns, read:
 - Performance matters — hand tracking adds CPU overhead; suggest efficient implementations.
 - Test with both left and right hands; don't assume right-hand dominance.
 - Hand tracking works best with interactions within arm's reach.
+
+## Field-of-View Readiness (Head-Locked UI)
+
+Run this when preparing the project for a device with a **narrower field of view** than the developer's current target. It finds **head-locked** (HUD) UI that fits a wider FoV but would be clipped at the edges of the narrower device — reticles, health/ammo counters, minimaps, tutorial pins, vignette/letterbox overlays — and reports each with a migration fix. This is a distinct pass from the input workflow above.
+
+### What "FoV bleed" means
+
+In VR nothing is permanently off-screen — the user can turn their head. The genuinely-clipped case is **head-locked** content: UI attached to the camera at a fixed angular offset. If that offset fit the wider FoV but exceeds the narrower device's frustum, it is clipped every frame and can never be brought into view. That is the only class this pass claims to find completely.
+
+### Reliability rule
+
+Compute the geometry; never estimate it. Do not read scene/prefab YAML and do trigonometry on nested transforms in your head. Get **resolved** transforms from the running project — enter Play mode (or a build) and read the live objects — then apply the deterministic frustum test below. The math decides; you classify and suggest.
+
+To reach the game's HUD states and automate this instead of clicking through by hand, drive the running build with **Meta XR Operator** — it can play the project and exercise gameplay states for you, then you inspect the resolved objects at each state. If you can't run and inspect the project live, this pass isn't reliable from static files alone — say so rather than guessing.
+
+### FoV spec source
+
+The frustum test needs both view frusta as tangent half-angles:
+
+- `{ leftTan, rightTan, upTan, downTan }` — target (narrower) device
+- `{ leftTan, rightTan, upTan, downTan }` — current device (for the "fit before, not now" delta)
+
+Use the target device's published FoV spec for these values. If you don't have both sets, **skip the FoV pass and say so** — never guess numbers you don't have.
+
+### Procedure
+
+1. Confirm you can run and inspect the project live (for example with Meta XR Operator driving a build) and that you have both frustum param sets. If either is missing, stop and report why.
+2. Enumerate head-locked UI candidates: `Canvas` with `renderMode` ScreenSpaceOverlay/ScreenSpaceCamera; any `Canvas`/`RectTransform`/`Renderer` whose transform ancestry passes through the tracked camera / `CenterEyeAnchor` / `OVRCameraRig` center eye; full-screen vignette/letterbox overlays. Exclude world-locked content not parented to the head.
+3. For each candidate, get resolved corner world positions and the center-eye camera world transform from the running project — not from YAML.
+4. Frustum test (per corner, transformed into eye space, for `z > 0`): `tanX = x/z`, `tanY = y/z`; a corner is inside a device when `-leftTan <= tanX <= rightTan` and `-downTan <= tanY <= upTan`. **Bleed** = at least one corner inside the current device but outside the target device.
+5. Report each bleed ordered by severity, noting per-corner margins (degrees past the target edge).
+
+### Severity
+
+- **Critical** — always-visible HUD the player relies on (reticle, health, ammo, objective marker) clipped.
+- **Warning** — secondary HUD partially clipped, or a comfort overlay mis-sized for the narrower FoV.
+- **Advice** — decorative head-locked element near the edge.
+
+### Migration guidance
+
+- Pull the HUD inward within the target's angular budget; prefer the primary 0–30° zone for must-see HUD.
+- Reduce HUD radius / reference distance so the cluster subtends a smaller angle.
+- Convert edge HUD to an off-screen indicator (arrow / edge glow) when it must live at the periphery.
+- Re-tune vignette / letterbox to the narrower FoV rather than the wider one.
+- Avoid simply hiding clipped HUD — relocate it; the information is usually needed.
+
+### Limits (state these in the report)
+
+- Completeness is guaranteed only for head-locked UI — not world-locked content expected to be seen peripherally, nor anything reached only in specific gameplay states.
+- First-order model: mono central frustum. Stereo (an element visible to one eye only) and lens-distortion are refinements, not covered.
+- If the frustum config was unavailable, say the pass was skipped — never report "no issues found" when it did not run.

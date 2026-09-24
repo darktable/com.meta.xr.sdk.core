@@ -87,11 +87,12 @@ namespace Meta.HandReadinessTool.Editor
 #pragma warning restore CS4014
         }
 
-        private static async Task FetchAndSwap()
+        private static async Task FetchAndSwap(bool clearCache = false)
         {
             try
             {
-                var result = await RemoteJsonContent<RulesPayload>.Create(CacheFileName, RulesContentId);
+                var result = await RemoteJsonContent<RulesPayload>.Create(
+                    CacheFileName, RulesContentId, clearCache: clearCache);
                 if (!result.IsSuccess)
                 {
                     EmitFailure(TelemetryConstants.ErrorKind.RulesFetchFailed, result.ErrorMessage);
@@ -172,7 +173,6 @@ namespace Meta.HandReadinessTool.Editor
 
         private static void EmitSuccess(int ruleCount, int schemaVersion)
         {
-            Debug.Log($"[HRT] RulesProvider: loaded {ruleCount} remote rule(s) (schema v{schemaVersion}).");
             HandReadinessTelemetry.SendEvent(
                 TelemetryConstants.FalcoEventName.RulesFetched,
                 evt =>
@@ -187,10 +187,6 @@ namespace Meta.HandReadinessTool.Editor
         private static void EmitFailure(string errorKind, string errorMessage, int? schemaVersion = null)
         {
             var bakedCount = HandReadinessCodeScanRules.BakedInRules?.Length ?? 0;
-            Debug.Log(
-                $"[HRT] RulesProvider: remote fetch did not swap rules ({errorKind}" +
-                (string.IsNullOrEmpty(errorMessage) ? "" : $": {errorMessage}") +
-                $") — falling back to {bakedCount} baked-in rule(s).");
             HandReadinessTelemetry.SendEvent(
                 TelemetryConstants.FalcoEventName.RulesFetched,
                 evt =>
@@ -230,5 +226,6 @@ namespace Meta.HandReadinessTool.Editor
             public string recommendation;
             public string[] steps;
         }
+
     }
 }

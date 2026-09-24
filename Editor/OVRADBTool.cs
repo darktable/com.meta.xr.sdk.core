@@ -136,6 +136,39 @@ public class OVRADBTool
     }
 
     /// <summary>
+    /// Reverses a TCP port from the connected device to the host machine.
+    /// Use this when an app running on device must connect to a server running on the editor host.
+    /// </summary>
+    /// <param name="port">The TCP port number to reverse (used for both device and host sides).</param>
+    /// <param name="waitingProcessToExitCallback">Optional callback invoked repeatedly while waiting for the process to exit. May be <c>null</c>.</param>
+    /// <returns>The ADB process exit code. 0 indicates success.</returns>
+    public int ReversePort(int port, WaitingProcessToExitCallback waitingProcessToExitCallback)
+    {
+        return ReversePort(null, port, waitingProcessToExitCallback);
+    }
+
+    /// <summary>
+    /// Reverses a TCP port from a specific connected device to the host machine.
+    /// </summary>
+    /// <param name="device">The device serial number to target. Pass <c>null</c> to use adb's default device selection.</param>
+    /// <param name="port">The TCP port number to reverse (used for both device and host sides).</param>
+    /// <param name="waitingProcessToExitCallback">Optional callback invoked repeatedly while waiting for the process to exit. May be <c>null</c>.</param>
+    /// <returns>The ADB process exit code. 0 indicates success.</returns>
+    public int ReversePort(string device, int port, WaitingProcessToExitCallback waitingProcessToExitCallback)
+    {
+        string outputString;
+        string errorString;
+
+        string portString = string.Format("tcp:{0}", port);
+        var args = string.IsNullOrEmpty(device)
+            ? new[] { "reverse", portString, portString }
+            : new[] { "-s", device, "reverse", portString, portString };
+
+        int exitCode = RunCommand(args, waitingProcessToExitCallback, out outputString, out errorString);
+        return exitCode;
+    }
+
+    /// <summary>
     /// Releases a previously forwarded TCP port.
     /// </summary>
     /// <param name="port">The TCP port number to release.</param>

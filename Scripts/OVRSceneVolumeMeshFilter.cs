@@ -136,7 +136,11 @@ public class OVRSceneVolumeMeshFilter : MonoBehaviour
         {
             var job = new BakeMeshJob
             {
+#if UNITY_6000_3_OR_NEWER
+                MeshID = _mesh.GetEntityId(),
+#else
                 MeshID = _mesh.GetInstanceID(),
+#endif
                 Convex = collider.convex
             }.Schedule();
             while (!IsJobDone(job))
@@ -248,8 +252,13 @@ public class OVRSceneVolumeMeshFilter : MonoBehaviour
     // to the collider.
     private struct BakeMeshJob : IJob
     {
+#if UNITY_6000_3_OR_NEWER
+        /// <summary>This is an internal member.</summary>
+        public UnityEngine.EntityId MeshID;
+#else
         /// <summary>This is an internal member.</summary>
         public int MeshID;
+#endif
 
         /// <summary>This is an internal member.</summary>
         public bool Convex;

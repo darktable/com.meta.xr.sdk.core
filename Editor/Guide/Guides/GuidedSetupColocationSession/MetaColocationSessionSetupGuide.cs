@@ -60,7 +60,7 @@ namespace Meta.XR.Guides.Editor
             return _window;
         }
 
-        [MenuItem("Meta/Guides/Meta Colocation Session Setup Guide")]
+        [MenuItem("Window/Meta/Guides/Meta Colocation Session Setup Guide", false, 3300)]
         private static void SetupGuide()
         {
             new MetaColocationSessionSetupGuide().ShowWindow(Origins.Menu, true);

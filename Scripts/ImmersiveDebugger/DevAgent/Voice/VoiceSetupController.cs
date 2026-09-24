@@ -61,7 +61,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         /// <summary>
         /// Event invoked when the DictationController is ready to use.
         /// </summary>
-        internal event Action<DictationController> OnDictationControllerReady;
+        internal event Action<IDictationSource> OnDictationControllerReady;
 
         /// <summary>
         /// Gets the DictationController instance created by this setup controller.

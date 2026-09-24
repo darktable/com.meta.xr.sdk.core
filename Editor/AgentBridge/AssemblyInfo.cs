@@ -28,3 +28,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("meta.xr.ai.mcpbridge.editor")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.MetaXROperator")]
 [assembly: InternalsVisibleTo("Meta.XR.Editor.AIToolsSetup")]
+
+

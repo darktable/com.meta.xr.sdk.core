@@ -100,7 +100,7 @@ namespace Meta.XR
             {
 #if UNITY_OPENXR_1_5_3
                 UInt32 dynamic;
-                FBGetFoveationLevel(out dynamic);
+                FBGetFoveationDynamic(out dynamic);
                 return dynamic != 0;
 #else
                 Debug.LogWarning("Unable to set dynamic foveation. Meta XR Foveation is not supported on this version of the OpenXR Provider. Please use 1.5.3 and above");

@@ -23,6 +23,7 @@
 using UnityEngine;
 using System.Text;
 using System;
+using System.Globalization;
 using System.Collections.Generic;
 using UnityEngine.Rendering;
 using UnityEngine.XR;
@@ -34,6 +35,12 @@ using System.Net.Sockets;
 using UnityEngine.AI;
 using UnityEngine.Playables;
 using Meta.XR.RuntimeOptimizer.Core;
+
+// Two OVRNetwork classes are visible here: this one, and a legacy class of the same name that
+// sits in the global namespace and reaches us through the asmdef's "Oculus.VR" reference. A
+// global-namespace type outranks a using-imported one, so an unqualified `OVRNetwork` binds to
+// the legacy class, which has no port discovery. Alias it so the binding cannot drift again.
+using CoreOVRNetwork = Meta.XR.RuntimeOptimizer.Core.OVRNetwork;
 
 
 
@@ -152,7 +159,7 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
         ProfilerRecorder triganleRecorder;
         SynchronizationContext context;
         SynchronizationContext backgroundThread;
-        private OVRNetwork.OVRNetworkTcpServer server = new OVRNetwork.OVRNetworkTcpServer();
+        private CoreOVRNetwork.OVRNetworkTcpServer server = new CoreOVRNetwork.OVRNetworkTcpServer();
         private bool isFrozen = false;
         private float lastValidGpuFrameTime = -1.0f;
 
@@ -1107,8 +1114,14 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
                     return $"GameObjectName:{goName}";
                 }
                 
-                // For normal GOs or group result, send with timing data
-                return $"GameObjectName:{goName},CpuRenderThreadTime:{x.CpuRenderThreadTime},CpuMainThreadTime:{x.CpuMainThreadTime}";
+                // For normal GOs or group result, send with timing data.
+                // Format with the invariant culture: the payload is comma-delimited, so a locale
+                // that uses ',' as the decimal separator would split one value into two fields.
+                var renderThread = x.CpuRenderThreadTime.HasValue
+                    ? x.CpuRenderThreadTime.Value.ToString(CultureInfo.InvariantCulture)
+                    : string.Empty;
+                var mainThread = x.CpuMainThreadTime.Value.ToString(CultureInfo.InvariantCulture);
+                return $"GameObjectName:{goName},CpuRenderThreadTime:{renderThread},CpuMainThreadTime:{mainThread}";
             }));
 
             Debug.Log(serializedData);

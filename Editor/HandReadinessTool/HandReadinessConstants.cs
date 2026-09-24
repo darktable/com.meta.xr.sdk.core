@@ -34,12 +34,12 @@ namespace Meta.HandReadinessTool.Editor
         /// <summary>
         /// The main tool window title.
         /// </summary>
-        public const string ToolTitle = "Hands optimizer";
+        public const string ToolTitle = "Device Readiness Check";
 
         /// <summary>
         /// The report title shown on the results screen.
         /// </summary>
-        public const string ReportTitle = "Hands Optimization Report";
+        public const string ReportTitle = "Device Readiness Report";
 
         /// <summary>
         /// Identifier used for AgentBridge caller identity.

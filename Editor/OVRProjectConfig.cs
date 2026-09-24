@@ -55,6 +55,7 @@ public class OVRProjectConfig : ScriptableObject, ISerializationCallbackReceiver
         QuestPro = 3,
         Quest3 = 4,
         Quest3S = 5,
+        VRGlasses = 6,
     }
 
     /// <summary>
@@ -149,8 +150,8 @@ public class OVRProjectConfig : ScriptableObject, ISerializationCallbackReceiver
         .ToArray();
 
     public List<DeviceType> targetDeviceTypes = new()
-        { DeviceType.Quest, DeviceType.Quest2, DeviceType.QuestPro, DeviceType.Quest3, DeviceType.Quest3S
-        };
+        { DeviceType.Quest, DeviceType.Quest2, DeviceType.QuestPro, DeviceType.Quest3, DeviceType.Quest3S,
+          DeviceType.VRGlasses };
 
     public bool allowOptional3DofHeadTracking = false;
     public HandTrackingSupport handTrackingSupport = HandTrackingSupport.ControllersOnly;
@@ -360,6 +361,7 @@ public class OVRProjectConfig : ScriptableObject, ISerializationCallbackReceiver
                 projectConfig.targetDeviceTypes.Add(DeviceType.QuestPro);
                 projectConfig.targetDeviceTypes.Add(DeviceType.Quest3);
                 projectConfig.targetDeviceTypes.Add(DeviceType.Quest3S);
+                projectConfig.targetDeviceTypes.Add(DeviceType.VRGlasses);
                 projectConfig.allowOptional3DofHeadTracking = false;
                 projectConfig.handTrackingSupport = HandTrackingSupport.ControllersOnly;
                 projectConfig.handTrackingFrequency = HandTrackingFrequency.LOW;
@@ -423,6 +425,10 @@ public class OVRProjectConfig : ScriptableObject, ISerializationCallbackReceiver
                 projectConfig.targetDeviceTypes.Add(DeviceType.Quest3S);
             }
 
+            if (!projectConfig.targetDeviceTypes.Contains(DeviceType.VRGlasses))
+            {
+                projectConfig.targetDeviceTypes.Add(DeviceType.VRGlasses);
+            }
         }
 
         return projectConfig;

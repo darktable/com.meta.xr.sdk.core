@@ -19,7 +19,6 @@
  */
 
 using System;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Meta.XR.Editor.UserInterface.RLDS;
@@ -50,9 +49,12 @@ namespace Meta.HandReadinessTool.Editor.UI
             content.style.paddingTop = RLDSConstants.Spacing.Size4XL;
 
             var cover = HandReadinessResources.CreateCoverBanner(
-                title: "Hands optimizer",
-                subtitle: "Audit your project for hands-only compatibility. Review recommendations and " +
-                          "issues to ensure your app works without controllers.",
+                title: HandReadinessScreenContentProvider.Get(
+                    "welcome.title", "Device Readiness Check"),
+                subtitle: HandReadinessScreenContentProvider.Get(
+                    "welcome.subtitle",
+                    "Get your project ready for the next generation of Meta XR device requirements. " +
+                    "Review recommendations across input, field of view, and form factor."),
                 iconResourceName: "icon_hand_tracking");
             cover.style.marginBottom = RLDSConstants.Spacing.Size4XL;
             content.Add(cover);
@@ -69,7 +71,7 @@ namespace Meta.HandReadinessTool.Editor.UI
             AddIconBullet(howSection, "icon_file",
                 "Share project files or describe what you're building.");
             AddIconBullet(howSection, "icon_hand_tracking",
-                "Your project is checked against hands-only tracking requirements.");
+                "Your project is checked against the next generation of Meta XR device requirements.");
             AddIconBullet(howSection, "icon_list_checked",
                 "See what needs to change and why.");
 

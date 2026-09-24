@@ -22,6 +22,8 @@ using System;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Meta.XR.Editor.UserInterface.RLDS;
+using ActionLinkDescription = Meta.XR.Editor.UserInterface.ActionLinkDescription;
+using RLDSButton = Meta.XR.Editor.UserInterface.RLDS.Button;
 
 namespace Meta.HandReadinessTool.Editor.UI
 {
@@ -40,16 +42,24 @@ namespace Meta.HandReadinessTool.Editor.UI
         /// </summary>
         private const int HeroContentWidth = 896;
         private const int HeroHeight = 240;
+        internal const string FovSimulationSettingsButtonName = "fov-simulation-settings-button";
+        internal const string FovSimulationGuidanceName = "fov-simulation-guidance";
+        internal const string FovSimulationGuidanceRowName = "fov-simulation-guidance-row";
+        internal const string FovSimulationDescriptionName = "fov-simulation-description";
 
         /// <summary>Creates the confirmation screen UI.</summary>
         /// <param name="totalResolvedCount">Total number of recommendations resolved (rendered as "All {N} recommendations have been resolved").</param>
         /// <param name="onClose">Callback invoked when the Close button is clicked.</param>
         /// <param name="onExploreBuildingBlocks">Callback invoked when the Explore Building Blocks button is clicked.</param>
+        /// <param name="hasOvrManager">Whether the active scene contains an OVRManager.</param>
+        /// <param name="onOpenFovSimulationSettings">Callback that selects and highlights the OVRManager FoV setting.</param>
         /// <returns>A <see cref="VisualElement"/> containing the complete confirmation screen.</returns>
         public static VisualElement Create(
             int totalResolvedCount,
             Action onClose,
-            Action onExploreBuildingBlocks)
+            Action onExploreBuildingBlocks,
+            bool hasOvrManager,
+            Action onOpenFovSimulationSettings)
         {
             var container = new VisualElement();
             container.style.flexGrow = 1;
@@ -67,6 +77,8 @@ namespace Meta.HandReadinessTool.Editor.UI
             content.Add(BuildHeroPanel(totalResolvedCount));
             content.Add(BuildWhatHappensNext());
 
+            content.Add(BuildFovSimulationGuidance(hasOvrManager, onOpenFovSimulationSettings));
+
             container.Add(content);
 
             var closeButton = HandReadinessResources.CreateBackButton("Close", onClose);
@@ -75,6 +87,76 @@ namespace Meta.HandReadinessTool.Editor.UI
             container.Add(HandReadinessResources.CreateFooter(closeButton, exploreButton));
 
             return container;
+        }
+
+        private static VisualElement BuildFovSimulationGuidance(
+            bool hasOvrManager,
+            Action onOpenFovSimulationSettings)
+        {
+            var card = new VisualElement { name = FovSimulationGuidanceName };
+            card.AddToClassList(HandReadinessStyles.Card.Root);
+            card.style.alignSelf = Align.Center;
+            card.style.width = HeroContentWidth;
+            card.style.marginTop = RLDSConstants.Spacing.Size3XL;
+            card.style.paddingLeft = RLDSConstants.Spacing.SizeXL;
+            card.style.paddingRight = RLDSConstants.Spacing.SizeXL;
+            card.style.paddingTop = RLDSConstants.Spacing.SizeLG;
+            card.style.paddingBottom = RLDSConstants.Spacing.SizeLG;
+
+            var row = new VisualElement { name = FovSimulationGuidanceRowName };
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems = Align.FlexEnd;
+
+            var textColumn = new VisualElement();
+            textColumn.style.flexGrow = 1;
+            textColumn.style.flexShrink = 1;
+
+            var title = new Label(HandReadinessScreenContentProvider.Get(
+                "confirmation.fov.title",
+                "Validate the device field of view"));
+            title.AddToClassList(RLDSConstants.Typography.Body1Label);
+            title.style.marginBottom = RLDSConstants.Spacing.SizeXS;
+            textColumn.Add(title);
+
+            var description = new Label(hasOvrManager
+                ? HandReadinessScreenContentProvider.Get(
+                    "confirmation.fov.body",
+                    "Run your app on Quest once with device field of view simulation enabled. " +
+                    "Configure it in OVRManager > Quest > Experimental > Device Simulation.")
+                : HandReadinessScreenContentProvider.Get(
+                    "confirmation.fov.bodyNoManager",
+                    "This scene has no OVRManager. Enable device field of view simulation in the " +
+                    "Oculus Runtime Settings asset, or control the mask with Immersive Debugger at runtime."));
+            description.name = FovSimulationDescriptionName;
+            description.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
+            description.style.whiteSpace = WhiteSpace.Normal;
+            textColumn.Add(description);
+            row.Add(textColumn);
+
+            if (hasOvrManager)
+            {
+                var button = (UnityEngine.UIElements.Button)new RLDSButton(
+                    new ActionLinkDescription
+                    {
+                        Content = new GUIContent(HandReadinessScreenContentProvider.Get(
+                            "confirmation.fov.button", "Open FoV setting")),
+                        Action = onOpenFovSimulationSettings,
+                        // Stable telemetry id: the label above is remotely tunable, so the
+                        // click event must not be identified by label text.
+                        Id = "hrt-confirmation-open-fov-setting",
+                    },
+                    RLDSConstants.ButtonVariant.Secondary,
+                    RLDSConstants.ButtonSize.Small).Build();
+                button.name = FovSimulationSettingsButtonName;
+                button.style.alignSelf = Align.FlexEnd;
+                button.style.flexShrink = 0;
+                button.style.marginLeft = RLDSConstants.Spacing.SizeXL;
+                row.Add(button);
+            }
+
+            card.Add(row);
+
+            return card;
         }
 
         private static VisualElement BuildHeroPanel(int totalResolvedCount)
@@ -91,7 +173,11 @@ namespace Meta.HandReadinessTool.Editor.UI
             panel.style.alignSelf = Align.Center;
             panel.style.width = HeroContentWidth;
             panel.style.maxWidth = HeroContentWidth;
-            panel.style.height = HeroHeight;
+            // minHeight, not a fixed height: on the "ready" state the check + two-line
+            // heading + subtitle + badge exceed HeroHeight, and a fixed height makes the
+            // column flex-shrink its children — collapsing the badge pill so its label
+            // overflows below the pill border. Growing to fit avoids that.
+            panel.style.minHeight = HeroHeight;
             panel.style.paddingTop = RLDSConstants.Spacing.Size3XL;
             panel.style.paddingBottom = RLDSConstants.Spacing.Size3XL;
             panel.style.paddingLeft = RLDSConstants.Spacing.Size3XL;
@@ -103,7 +189,9 @@ namespace Meta.HandReadinessTool.Editor.UI
             check.style.marginBottom = RLDSConstants.Spacing.SizeSM;
             panel.Add(check);
 
-            var title = new Label("Your project is optimized for hands");
+            var title = new Label(HandReadinessScreenContentProvider.Get(
+                "confirmation.title",
+                "You've completed the device readiness checks"));
             title.AddToClassList(RLDSConstants.Typography.Heading1);
             title.AddToClassList(HandReadinessStyles.Text.Primary);
             title.style.unityTextAlign = TextAnchor.MiddleCenter;
@@ -126,14 +214,15 @@ namespace Meta.HandReadinessTool.Editor.UI
         }
 
         /// <summary>
-        /// "Project optimized" badge-pill: neutral badge shell with a positive
-        /// check glyph.
+        /// Completion badge-pill: neutral badge shell with a positive check glyph.
         /// </summary>
         private static VisualElement BuildOptimizedBadge()
         {
             var badge = new VisualElement();
             badge.AddToClassList(RLDSConstants.BadgePill.Base);
             badge.AddToClassList(RLDSConstants.BadgePill.Neutral);
+            // Never let the pill compress vertically to fit a tight parent — that clips its label.
+            badge.style.flexShrink = 0;
 
             var icon = HandReadinessResources.CreateTintableIcon(
                 "icon_checkbox_check", RLDSConstants.IconSize.SizeXS);
@@ -141,7 +230,9 @@ namespace Meta.HandReadinessTool.Editor.UI
             icon.AddToClassList(HandReadinessStyles.Icon.ThemedPositive);
             badge.Add(icon);
 
-            var label = new Label("Project optimized for hands-only experiences");
+            var label = new Label(HandReadinessScreenContentProvider.Get(
+                "confirmation.badge",
+                "Readiness checks complete"));
             label.AddToClassList(RLDSConstants.BadgePill.Label);
             badge.Add(label);
 
@@ -164,17 +255,30 @@ namespace Meta.HandReadinessTool.Editor.UI
             AddBullet(
                 section,
                 "icon_hand_tracking",
-                "Hands interactions and input methods are now optimized for this project.",
+                HandReadinessScreenContentProvider.Get(
+                    "confirmation.step1",
+                    "You've addressed the current readiness recommendations for the next generation of Meta XR devices."),
                 addBottomMargin: true);
             AddBullet(
                 section,
                 "icon_touch_3_left",
-                "Your project remains compatible with other input methods like controllers.",
+                HandReadinessScreenContentProvider.Get(
+                    "confirmation.step2",
+                    "Your project remains compatible with other input methods like controllers."),
+                addBottomMargin: true);
+            AddBullet(
+                section,
+                "icon_list_checked",
+                HandReadinessScreenContentProvider.Get(
+                    "confirmation.recheck",
+                    "Requirements are still evolving — re-run this check as you get closer to the device release for the latest recommendations."),
                 addBottomMargin: true);
             AddBullet(
                 section,
                 "icon_default_app",
-                "Explore Building Blocks related to hand tracking.",
+                HandReadinessScreenContentProvider.Get(
+                    "confirmation.step3",
+                    "Explore Building Blocks related to hand tracking."),
                 addBottomMargin: false);
 
             return section;

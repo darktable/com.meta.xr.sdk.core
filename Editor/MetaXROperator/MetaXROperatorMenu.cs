@@ -28,12 +28,12 @@ namespace Meta.XR.Editor
     /// </summary>
     internal static class MetaXROperatorMenu
     {
-        private const string MenuPath = "Meta/Meta XR Operator";
+        private const string MenuPath = "Window/Meta/Meta XR Operator";
         private const string ActivateMenuPath = MenuPath + "/Activate";
         private const string DeactivateMenuPath = MenuPath + "/Deactivate";
         private const string StatusMenuPath = MenuPath + "/Status";
 
-        [MenuItem(ActivateMenuPath, false, 1)]
+        [MenuItem(ActivateMenuPath, false, 2301)]
         public static void Activate()
         {
             MetaXROperatorActivator.Activate(MetaXROperatorTelemetryConstants.Source.Menu);
@@ -45,7 +45,7 @@ namespace Meta.XR.Editor
             return MetaXROperatorActivator.AreBinariesPresent() && !MetaXROperatorActivator.IsActivated;
         }
 
-        [MenuItem(DeactivateMenuPath, false, 2)]
+        [MenuItem(DeactivateMenuPath, false, 2302)]
         public static void Deactivate()
         {
             MetaXROperatorActivator.Deactivate(MetaXROperatorTelemetryConstants.Source.Menu);
@@ -57,7 +57,7 @@ namespace Meta.XR.Editor
             return MetaXROperatorActivator.AreBinariesPresent() && MetaXROperatorActivator.IsActivated;
         }
 
-        [MenuItem(StatusMenuPath, false, 4)]
+        [MenuItem(StatusMenuPath, false, 2304)]
         public static void ShowStatus()
         {
             bool binariesPresent = MetaXROperatorActivator.AreBinariesPresent();

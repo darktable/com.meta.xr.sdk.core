@@ -43,6 +43,7 @@ namespace Meta.XR.AI.AgentBridge.Acp
         private readonly string _executablePath;
         private readonly string? _environmentPath;
         private readonly string _acpFlag;
+        private readonly IReadOnlyList<string> _additionalArguments;
 
         // Request correlation
         private int _nextRequestId;
@@ -53,7 +54,9 @@ namespace Meta.XR.AI.AgentBridge.Acp
 
         // Receive loop
         private Thread? _receiveThread;
+        private Thread? _stderrThread;
         private volatile bool _stopping;
+        private int _disposed;
 
         // Stderr capture for error diagnostics
         private readonly StringBuilder _stderrBuffer = new();
@@ -102,17 +105,27 @@ namespace Meta.XR.AI.AgentBridge.Acp
             }
         }
 
-        public AcpClient(string executablePath, string? environmentPath = null, string acpFlag = "--acp")
+        public AcpClient(
+            string executablePath,
+            string? environmentPath = null,
+            string acpFlag = "--acp",
+            IReadOnlyList<string>? additionalArguments = null)
         {
             _executablePath = executablePath;
             _environmentPath = environmentPath;
             _acpFlag = acpFlag;
+            _additionalArguments = additionalArguments == null
+                ? Array.Empty<string>()
+                : new List<string>(additionalArguments);
         }
 
         /// <summary>
         /// Start the ACP subprocess and perform the initialize handshake.
         /// </summary>
-        public async Task<InitializeResult> InitializeAsync(string clientName, string clientVersion)
+        public async Task<InitializeResult> InitializeAsync(
+            string clientName,
+            string clientVersion,
+            CancellationToken cancellationToken = default)
         {
             StartProcess();
 
@@ -123,16 +136,21 @@ namespace Meta.XR.AI.AgentBridge.Acp
                 ClientInfo = new ClientInfo { Name = clientName, Version = clientVersion }
             };
 
-            var resultToken = await SendRequestAsync("initialize", initParams);
+            var resultToken = await SendRequestAsync("initialize", initParams, cancellationToken);
             return resultToken?.ToObject<InitializeResult>() ?? new InitializeResult();
         }
 
         /// <summary>
         /// Create a new session.
         /// </summary>
-        public async Task<NewSessionResult> NewSessionAsync(string cwd)
+        public async Task<NewSessionResult> NewSessionAsync(
+            string cwd,
+            CancellationToken cancellationToken = default)
         {
-            var resultToken = await SendRequestAsync("session/new", new NewSessionParams { Cwd = cwd });
+            var resultToken = await SendRequestAsync(
+                "session/new",
+                new NewSessionParams { Cwd = cwd },
+                cancellationToken);
             return resultToken?.ToObject<NewSessionResult>() ?? new NewSessionResult();
         }
 
@@ -140,10 +158,19 @@ namespace Meta.XR.AI.AgentBridge.Acp
         /// Send a prompt to the agent. Returns when the agent finishes processing.
         /// Streaming updates arrive via OnSessionUpdate during execution.
         /// </summary>
-        public async Task<PromptResult> PromptAsync(string sessionId, List<ContentBlock> prompt)
+        public async Task<PromptResult> PromptAsync(
+            string sessionId,
+            List<ContentBlock> prompt,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var cancellationRegistration = cancellationToken.Register(() =>
+            {
+                _ = Task.Run(() => TryCancel(sessionId));
+            });
             var resultToken = await SendRequestAsync("session/prompt",
-                new PromptParams { SessionId = sessionId, Prompt = prompt });
+                new PromptParams { SessionId = sessionId, Prompt = prompt },
+                cancellationToken);
             return resultToken?.ToObject<PromptResult>() ?? new PromptResult();
         }
 
@@ -158,8 +185,12 @@ namespace Meta.XR.AI.AgentBridge.Acp
         /// <summary>
         /// Send a JSON-RPC request and wait for the correlated response.
         /// </summary>
-        private Task<JsonNode?> SendRequestAsync(string method, object? @params)
+        private async Task<JsonNode?> SendRequestAsync(
+            string method,
+            object? @params,
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var id = Interlocked.Increment(ref _nextRequestId);
             var tcs = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingRequests[id] = tcs;
@@ -172,9 +203,40 @@ namespace Meta.XR.AI.AgentBridge.Acp
             };
 
             var json = McpJsonConvert.Serialize(request, SerializerSettings);
-            SendLine(json);
+            using var cancellationRegistration = cancellationToken.Register(() =>
+            {
+                if (_pendingRequests.TryRemove(id, out var pendingRequest))
+                {
+                    pendingRequest.TrySetCanceled();
+                }
+            });
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                SendLine(json);
+            }
+            catch
+            {
+                _pendingRequests.TryRemove(id, out _);
+                throw;
+            }
 
-            return tcs.Task;
+            return await tcs.Task;
+        }
+
+        private void TryCancel(string sessionId)
+        {
+            try
+            {
+                Cancel(sessionId);
+            }
+            catch (Exception ex)
+            {
+                if (!_stopping && IsRunning)
+                {
+                    LogWarning($"ACP: Error cancelling session '{sessionId}': {ex.Message}");
+                }
+            }
         }
 
         /// <summary>
@@ -213,26 +275,7 @@ namespace Meta.XR.AI.AgentBridge.Acp
                     throw new InvalidOperationException("ACP process already started");
                 }
 
-                var psi = new ProcessStartInfo
-                {
-                    FileName = _executablePath,
-                    UseShellExecute = false,
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8
-                };
-                psi.ArgumentList.Add(_acpFlag);
-
-                // Set the login shell PATH so dependencies like dotslash are found
-                if (!string.IsNullOrEmpty(_environmentPath))
-                {
-                    psi.Environment["PATH"] = _environmentPath;
-                }
-
-                _process = new Process { StartInfo = psi };
+                _process = new Process { StartInfo = CreateProcessStartInfo() };
                 _stopping = false;
 
                 _process.Start();
@@ -246,13 +289,40 @@ namespace Meta.XR.AI.AgentBridge.Acp
                 _receiveThread.Start();
 
                 // Start stderr reader for logging
-                var stderrThread = new Thread(StderrLoop)
+                _stderrThread = new Thread(StderrLoop)
                 {
                     IsBackground = true,
                     Name = "AcpClient-StderrLoop"
                 };
-                stderrThread.Start();
+                _stderrThread.Start();
             }
+        }
+
+        internal ProcessStartInfo CreateProcessStartInfo()
+        {
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = _executablePath,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+            processStartInfo.ArgumentList.Add(_acpFlag);
+            foreach (var argument in _additionalArguments)
+            {
+                processStartInfo.ArgumentList.Add(argument);
+            }
+
+            if (!string.IsNullOrEmpty(_environmentPath))
+            {
+                processStartInfo.Environment["PATH"] = _environmentPath;
+            }
+
+            return processStartInfo;
         }
 
         /// <summary>
@@ -283,6 +353,11 @@ namespace Meta.XR.AI.AgentBridge.Acp
                         {
                             LogWarning($"ACP: ReadLine error in receive loop: {ex.Message}");
                         }
+                        break;
+                    }
+
+                    if (_stopping || Volatile.Read(ref _disposed) != 0)
+                    {
                         break;
                     }
 
@@ -349,6 +424,11 @@ namespace Meta.XR.AI.AgentBridge.Acp
                         {
                             LogWarning($"ACP: ReadLine error in stderr loop: {ex.Message}");
                         }
+                        break;
+                    }
+
+                    if (_stopping || Volatile.Read(ref _disposed) != 0)
+                    {
                         break;
                     }
 
@@ -538,8 +618,42 @@ namespace Meta.XR.AI.AgentBridge.Acp
             }
         }
 
+        internal void Abort()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            _stopping = true;
+
+            // Do not take _processLock: abort must unblock a writer that is stuck while holding it.
+            var process = Volatile.Read(ref _process);
+            if (process == null || Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!process.HasExited)
+                {
+                    CommandLineArguments.KillProcessTree(process);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"ACP: Error aborting process: {ex.Message}");
+            }
+        }
+
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
             _stopping = true;
 
             lock (_processLock)
@@ -560,7 +674,12 @@ namespace Meta.XR.AI.AgentBridge.Acp
                             // Give a brief moment to exit
                             if (!_process.WaitForExit(2000))
                             {
-                                _process.Kill();
+                                CommandLineArguments.KillProcessTree(_process);
+
+                                // Kill returns before the OS reaps the process; wait so its
+                                // exclusive resources (config locks, stdio pipes) are freed
+                                // before a replacement client spawns.
+                                _process.WaitForExit(2000);
                             }
                         }
 
@@ -575,8 +694,28 @@ namespace Meta.XR.AI.AgentBridge.Acp
                 }
             }
 
+            JoinReaderThread(_receiveThread);
+            JoinReaderThread(_stderrThread);
+            _receiveThread = null;
+            _stderrThread = null;
+
             FailAllPendingRequests("ACP client disposed");
             _requestHandler.Dispose();
+        }
+
+        private static void JoinReaderThread(Thread? thread)
+        {
+            if (thread != null && thread != Thread.CurrentThread)
+            {
+                try
+                {
+                    if (!thread.Join(2000))
+                    {
+                        LogWarning($"ACP: Reader thread '{thread.Name ?? thread.ManagedThreadId.ToString()}' did not stop within the disposal timeout");
+                    }
+                }
+                catch (ThreadStateException) { }
+            }
         }
     }
 

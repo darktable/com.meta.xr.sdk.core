@@ -18,7 +18,6 @@
  * limitations under the License.
  */
 
-using System;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
@@ -26,9 +25,8 @@ using UnityEngine;
 namespace Meta.XR.BuildingBlocks.Editor
 {
     /// <summary>
-    /// Provides block data and installation logic for the surface-projected passthrough window building block.
+    /// Provides block data and installation logic for the passthrough window building block.
     /// </summary>
-    [Obsolete("Surface projected passthrough is being deprecated and support for it will be removed in a future release.")]
     public class PassthroughWindowBlockData : BlockData
     {
         internal override bool CanBeAddedOverGameObject => true;
@@ -39,7 +37,7 @@ namespace Meta.XR.BuildingBlocks.Editor
             {
                 var installationSteps = new List<InstallationStepInfo>
                 {
-                    new(null, $"Detects whether any Underlay Passthrough component is present in the scene. If not, creates a GameObject and add a <b>{nameof(OVRPassthroughLayer)}</b> component to it.")
+                    new(null, $"Detects whether any <b>{nameof(OVRPassthroughLayer)}</b> is present in the scene. If not, creates a GameObject and adds an <b>{nameof(OVRPassthroughLayer)}</b> component to it.")
                 };
                 installationSteps.AddRange(base.InstallationSteps);
                 return installationSteps;
@@ -48,10 +46,9 @@ namespace Meta.XR.BuildingBlocks.Editor
 
         protected override List<GameObject> InstallRoutine(GameObject selectedGameObject)
         {
-            if (!OVRPassthroughHelper.IsAnyPassthroughLayerUnderlay())
+            if (!OVRPassthroughHelper.IsPassthroughAvailable())
             {
                 var pt = new GameObject("OVRPassthroughLayer").AddComponent<OVRPassthroughLayer>();
-                pt.overlayType = OVROverlay.OverlayType.Underlay;
                 Undo.RegisterCreatedObjectUndo(pt.gameObject, "Instantiate PT layer.");
             }
 

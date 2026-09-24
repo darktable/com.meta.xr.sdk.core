@@ -20,6 +20,7 @@
 
 
 using System;
+using Meta.XR.FovSimulator;
 using Meta.XR.Telemetry;
 using Oculus.VR.Editor;
 using UnityEngine;
@@ -110,6 +111,7 @@ public class OVRProjectConfigEditor : Editor
         FaceTrackingSupport,
         InsightPassthroughSupport,
         ExperimentalSupport,
+        FovSimulation,
     }
 
     internal static ProjectConfigTab selectedTab = 0;
@@ -422,7 +424,7 @@ public class OVRProjectConfigEditor : Editor
                 OVREditorUtil.SetupBoolField(projectConfig, new GUIContent("Remove Existing Gradle AndroidManifest per Build",
                     "If checked, this will always delete the AndroidManifest file in the gradle project before a build which is known to prevent the AndroidManfiest from updating properly."),
                     ref projectConfig.removeGradleManifest, ref hasModified);
-                OVREditorUtil.SetupBoolField(projectConfig, new GUIContent("Disable Horizon OS SDK Tag", "Unless disabled, the application can specify the minimum required Horizon OS SDK version needed to run and the target version the application was created for."),
+                OVREditorUtil.SetupBoolField(projectConfig, new GUIContent("Disable OS SDK manifest element", "Unless disabled, the application can specify the minimum required OS SDK version needed to run and the target OS SDK version the application was created for."),
                     ref projectConfig.horizonOsSdkDisabled, ref hasModified);
                 if (!projectConfig.horizonOsSdkDisabled)
                 {
@@ -461,11 +463,30 @@ public class OVRProjectConfigEditor : Editor
 
             case ProjectConfigTab.Experimental:
 
-                // Experimental Features Enabled
-                OVREditorUtil.SetupBoolField(projectConfig, new GUIContent("Experimental Features Enabled",
+                bool experimentalFeaturesEnabled = projectConfig.experimentalFeaturesEnabled;
+                OVREditorUtil.SetupBoolField(projectConfig, new GUIContent(
+                        "Experimental Features Enabled",
                         "If checked, this application can use experimental features. Note that such features are for developer use only. This option must be disabled when submitting to the Oculus Store."),
-                    ref projectConfig.experimentalFeaturesEnabled, ref hasModified);
+                    ref projectConfig.experimentalFeaturesEnabled,
+                    ref hasModified);
                 Highlighter.HighlightIdentifier(GUILayoutUtility.GetLastRect(), HighlightLabel.ExperimentalSupport.ToString());
+
+                var runtimeSettings = OVRRuntimeSettings.GetRuntimeSettings();
+                if (experimentalFeaturesEnabled && !projectConfig.experimentalFeaturesEnabled &&
+                    runtimeSettings != null && runtimeSettings.FovSimulationEnabled)
+                {
+                    SetAndroidFovSimulationEnabled(
+                        runtimeSettings,
+                        false,
+                        OVRFovSimulationTelemetry.AndroidExperimentalFeaturesSource);
+                }
+
+                if (runtimeSettings != null)
+                {
+                    EditorGUILayout.Space();
+                    EditorGUILayout.LabelField("Device Simulation", EditorStyles.boldLabel);
+                    DrawAndroidFovSimulationInspector(runtimeSettings, projectConfig);
+                }
 
                 break;
         }
@@ -478,5 +499,75 @@ public class OVRProjectConfigEditor : Editor
         {
             OVRProjectConfig.CommitProjectConfig(projectConfig);
         }
+    }
+
+    internal static void DrawAndroidFovSimulationInspector(
+        OVRRuntimeSettings runtimeSettings,
+        OVRProjectConfig projectConfig)
+    {
+        if (runtimeSettings == null || projectConfig == null)
+        {
+            return;
+        }
+
+        bool fovSimulationEnabled = runtimeSettings.FovSimulationEnabled;
+        using (new EditorGUI.DisabledScope(!CanModifyAndroidFovSimulation(
+                   projectConfig.experimentalFeaturesEnabled,
+                   fovSimulationEnabled)))
+        {
+            EditorGUI.BeginChangeCheck();
+            fovSimulationEnabled = EditorGUILayout.Toggle(
+                new GUIContent("Simulate Device Field of View",
+                    "Masks the application view to approximate the target device field of view. " +
+                    "Quest requires Experimental Features Enabled. Android builds are marked experimental " +
+                    "while enabled and cannot be submitted to the Meta Horizon Store."),
+                fovSimulationEnabled);
+            Highlighter.HighlightIdentifier(
+                GUILayoutUtility.GetLastRect(),
+                HighlightLabel.FovSimulation.ToString());
+            if (EditorGUI.EndChangeCheck())
+            {
+                SetAndroidFovSimulationEnabled(
+                    runtimeSettings,
+                    fovSimulationEnabled,
+                    OVRFovSimulationTelemetry.AndroidProjectConfigSource);
+            }
+        }
+    }
+
+    internal static void DrawEditorFovSimulationInspector()
+    {
+        bool fovSimulationEnabled = FovSimulationEditorController.Enabled;
+        EditorGUI.BeginChangeCheck();
+        fovSimulationEnabled = EditorGUILayout.Toggle(
+            new GUIContent("Simulate Device Field of View",
+                "Masks the application view in Editor Play Mode, Link, and Meta XR Simulator. " +
+                "This local preference does not affect Android builds or Store submission."),
+            fovSimulationEnabled);
+        if (EditorGUI.EndChangeCheck())
+        {
+            FovSimulationEditorController.SetEnabled(
+                fovSimulationEnabled,
+                OVRFovSimulationTelemetry.EditorLinkSource);
+        }
+    }
+
+    internal static bool CanModifyAndroidFovSimulation(
+        bool experimentalFeaturesEnabled,
+        bool fovSimulationEnabled) =>
+        experimentalFeaturesEnabled || fovSimulationEnabled;
+
+    private static void SetAndroidFovSimulationEnabled(
+        OVRRuntimeSettings runtimeSettings,
+        bool enabled,
+        string source)
+    {
+        if (runtimeSettings == null || runtimeSettings.FovSimulationEnabled == enabled)
+        {
+            return;
+        }
+
+        Undo.RecordObject(runtimeSettings, "Changed Android FoV Simulation");
+        OVRRuntimeSettings.SetAndroidFovSimulationEnabled(runtimeSettings, enabled, source);
     }
 }

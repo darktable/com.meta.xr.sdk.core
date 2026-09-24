@@ -21,7 +21,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Meta.XR.Editor.RemoteContent;
@@ -55,7 +54,6 @@ namespace Meta.XR.Editor
             RegisterEyeTrackingTask();
             RegisterFoveatedRenderingTask();
             RegisterPassthroughTask();
-            RegisterPassthroughOverlayTask();
             RegisterSpatialAnchorsTask();
             RegisterSharedSpatialAnchorsTask();
             RegisterSceneUnderstandingTask();
@@ -256,24 +254,6 @@ namespace Meta.XR.Editor
                     OVRProjectConfig.FeatureSupport.None ||
                     OVRProjectSetupUtils.FindComponentInScene<OVRPassthroughLayer>() != null,
                 message: "Enable Passthrough for mixed reality camera access"
-            );
-        }
-
-        private static void RegisterPassthroughOverlayTask()
-        {
-            OVRProjectSetup.AddTask(
-                conditionalValidity: _ =>
-                    OVRProjectSetupUtils.FindComponentInScene<OVRPassthroughLayer>() != null,
-                level: OVRProjectSetup.TaskLevel.Hidden,
-                group: OVRProjectSetup.TaskGroup.Features,
-                isDone: _ =>
-                {
-                    var layers = OVRProjectSetupUtils.FindComponentsInScene<OVRPassthroughLayer>();
-#pragma warning disable CS0618 // Intentional use of deprecated overlayType for feature detection
-                    return layers.Any(layer => layer.overlayType == OVROverlay.OverlayType.Overlay);
-#pragma warning restore CS0618
-                },
-                message: "Use Passthrough overlay for passthrough compositing"
             );
         }
 

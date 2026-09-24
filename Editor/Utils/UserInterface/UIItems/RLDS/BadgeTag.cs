@@ -115,6 +115,11 @@ namespace Meta.XR.Editor.UserInterface
 
         private static TextureContent GetDefaultIcon(BadgeTagType type) => type switch
         {
+            BadgeTagType.Positive => Styles.Contents.CheckMaskIcon,
+            BadgeTagType.Info => Styles.Contents.InfoMaskIcon,
+            BadgeTagType.Warning => Styles.Contents.WarningMaskIcon,
+            BadgeTagType.Negative => Styles.Contents.ErrorMaskIcon,
+            BadgeTagType.Neutral => Styles.Contents.RemoveCircleMaskIcon,
             _ => null
         };
     }

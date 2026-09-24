@@ -3,6 +3,8 @@ Shader "URP/UI/Prerendered Opaque"
     Properties
     {
         _MainTex("Texture", 2D) = "white" {}
+        _MainTex_ST_Left ("_MainTex_ST_Left", Vector) = (1, 1, 0, 0)
+        _MainTex_ST_Right ("_MainTex_ST_Right", Vector) = (1, 1, 0, 0)
         _Color("Color", Color) = (1,1,1,1)
         _AlphaToMask("AlphaToMask", Int) = 0
         [Enum(UnityEngine.Rendering.BlendMode)] _AlphaWrite("Alpha Write", Int) = 0

@@ -260,6 +260,52 @@ namespace Meta.XR.AI.AgentBridge
         }
 
         /// <summary>
+        /// Get the cumulative token/cost usage for a specific caller's conversation.
+        /// Returns a zeroed <see cref="UsageTotals"/> when the provider reports none.
+        /// </summary>
+        /// <param name="caller">The caller identity, or null for the default state.</param>
+        /// <returns>The usage totals for the specified caller.</returns>
+        public static UsageTotals GetUsageForCaller(CallerIdentity? caller)
+        {
+            return ConversationPersistence.GetStateForCaller(caller?.Id).Usage ?? new UsageTotals();
+        }
+
+        // Serializes the read-modify-write of per-caller usage totals, which can be invoked
+        // from provider background threads (ACP receive loops, process readers).
+        private static readonly object _usageLock = new object();
+
+        /// <summary>
+        /// Accumulate reported token/cost usage into a specific caller's conversation.
+        /// Called by services that parse usage from provider output (e.g. Claude Code).
+        /// </summary>
+        /// <param name="caller">The caller identity, or null for the default state.</param>
+        /// <param name="inputTokens">Prompt (input) tokens to add.</param>
+        /// <param name="outputTokens">Completion (output) tokens to add.</param>
+        /// <param name="cacheReadTokens">Cache-read input tokens to add.</param>
+        /// <param name="cacheCreationTokens">Cache-creation input tokens to add.</param>
+        /// <param name="costUsd">Cost in USD to add.</param>
+        public static void AddUsageForCaller(
+            CallerIdentity? caller,
+            long inputTokens,
+            long outputTokens,
+            long cacheReadTokens,
+            long cacheCreationTokens,
+            double costUsd)
+        {
+            lock (_usageLock)
+            {
+                var state = ConversationPersistence.GetStateForCaller(caller?.Id);
+                state.Usage ??= new UsageTotals();
+                state.Usage.InputTokens += inputTokens;
+                state.Usage.OutputTokens += outputTokens;
+                state.Usage.CacheReadTokens += cacheReadTokens;
+                state.Usage.CacheCreationTokens += cacheCreationTokens;
+                state.Usage.CostUsd += costUsd;
+                ConversationPersistence.Save();
+            }
+        }
+
+        /// <summary>
         /// Check if a request is currently active (for default state).
         /// </summary>
         public static bool IsActive

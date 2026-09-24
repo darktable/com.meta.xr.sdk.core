@@ -130,3 +130,106 @@ internal static partial class OVRTelemetry
         }
     }
 }
+
+internal static class OVRFovSimulationTelemetry
+{
+    internal const string AndroidProjectConfigSource = "android_project_config";
+    internal const string AndroidExperimentalFeaturesSource = "android_experimental_features";
+    internal const string EditorLinkSource = "editor_link";
+    internal const string AndroidEnvironment = "android";
+    internal const string EditorEnvironment = "editor";
+    internal const string ComponentCreationFailedReason = "component_creation_failed";
+    internal const string ActivationExceptionReason = "activation_exception";
+    internal const string ActivationFailedReason = "activation_failed";
+    internal const string DeactivationExceptionReason = "deactivation_exception";
+
+    internal static void SendSettingChanged(string source, bool enabled)
+    {
+        CreateSettingChangedEvent(source, enabled).Send();
+    }
+
+    internal static UnifiedEventData CreateSettingChangedEvent(string source, bool enabled)
+    {
+        var eventData = new UnifiedEventData("fov_simulation_setting_changed")
+        {
+            isEssential = true,
+            productType = TelemetryProductType.CoreSdk,
+        };
+        eventData.SetMetadata("source", source);
+        eventData.SetMetadata("enabled", enabled);
+        return eventData;
+    }
+
+    internal static void SendRuntimeStarted(string environment)
+    {
+        CreateRuntimeStartedEvent(environment).Send();
+    }
+
+    internal static UnifiedEventData CreateRuntimeStartedEvent(string environment)
+    {
+        var eventData = new UnifiedEventData("fov_simulation_started")
+        {
+            isEssential = true,
+            productType = TelemetryProductType.CoreSdk,
+            is_runtime = true,
+        };
+        eventData.SetMetadata("environment", environment);
+        return eventData;
+    }
+
+    internal static void SendRuntimeStartFailed(
+        string reason,
+        string environment,
+        Exception exception = null)
+    {
+        CreateRuntimeStartFailedEvent(reason, environment, exception).Send();
+    }
+
+    internal static UnifiedEventData CreateRuntimeStartFailedEvent(
+        string reason,
+        string environment,
+        Exception exception = null)
+    {
+        var eventData = new UnifiedEventData("fov_simulation_start_failed")
+        {
+            isEssential = true,
+            productType = TelemetryProductType.CoreSdk,
+            is_runtime = true,
+        };
+        eventData.SetMetadata("reason", reason);
+        eventData.SetMetadata("environment", environment);
+        if (exception != null)
+        {
+            eventData.SetMetadata("exception_type", exception.GetType().FullName);
+        }
+        return eventData;
+    }
+
+    internal static void SendRuntimeStopFailed(
+        string reason,
+        string environment,
+        Exception exception = null)
+    {
+        CreateRuntimeStopFailedEvent(reason, environment, exception).Send();
+    }
+
+    internal static UnifiedEventData CreateRuntimeStopFailedEvent(
+        string reason,
+        string environment,
+        Exception exception = null)
+    {
+        var eventData = new UnifiedEventData("fov_simulation_stop_failed")
+        {
+            isEssential = true,
+            productType = TelemetryProductType.CoreSdk,
+            is_runtime = true,
+        };
+        eventData.SetMetadata("reason", reason);
+        eventData.SetMetadata("environment", environment);
+        if (exception != null)
+        {
+            eventData.SetMetadata("exception_type", exception.GetType().FullName);
+        }
+        return eventData;
+    }
+}

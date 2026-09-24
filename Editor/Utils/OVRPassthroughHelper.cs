@@ -18,9 +18,6 @@
  * limitations under the License.
  */
 
-using System;
-using System.Linq;
-using Meta.XR.Telemetry;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -40,42 +37,9 @@ internal static class OVRPassthroughHelper
         return true;
     }
 
-    [Obsolete("Flexible layering will be removed in a future update. Only one background Passthrough layer will be available.")]
-    internal static bool IsAnyPassthroughLayerUnderlay()
+    internal static bool IsPassthroughAvailable()
     {
-        return OVRProjectSetupUtils.FindComponentsInScene<OVRPassthroughLayer>()
-            .Any(p => p.overlayType == OVROverlay.OverlayType.Underlay);
-    }
-
-    [Obsolete("Flexible layering will be removed in a future update. Only one background Passthrough layer will be available.")]
-    internal static bool InitPassthroughLayerUnderlay(GameObject ovrCameraRig)
-    {
-        var passthroughLayers = OVRProjectSetupUtils.FindComponentsInScene<OVRPassthroughLayer>().ToList();
-
-        // no PT layers
-        if (passthroughLayers.Count == 0)
-        {
-            var underLay = ovrCameraRig.AddComponent<OVRPassthroughLayer>();
-            underLay.overlayType = OVROverlay.OverlayType.Underlay;
-        }
-        // there are layers but non of them are Underlay
-        else if (passthroughLayers.All(l => l.overlayType != OVROverlay.OverlayType.Underlay))
-        {
-            // if there is only one PT layer, change it to Underlay
-            if (passthroughLayers.Count == 1)
-            {
-                passthroughLayers.First().overlayType = OVROverlay.OverlayType.Underlay;
-            }
-            else
-            {
-                IssueTracker.TrackError(IssueTracker.SDK.Core, "ovr-passthrough-multiple-layers-no-underlay",
-                    "There are multiple OVRPassthroughLayer instances in the scene, but none of them is an Underlay. Set one of the layer's Placement to Underlay.");
-                return false;
-            }
-        }
-
-        SaveScene();
-        return true;
+        return OVRProjectSetupUtils.FindComponentsInScene<OVRPassthroughLayer>().Count > 0;
     }
 
     internal static bool HasCentralCamera(OVRCameraRig ovrCameraRig) =>

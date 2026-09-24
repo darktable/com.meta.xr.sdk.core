@@ -41,6 +41,20 @@ namespace Meta.HandReadinessTool.Editor.UI
     /// </summary>
     public static class ProjectDescriptionScreen
     {
+        // A UIToolkit text element stops rendering past ~16K characters (a single text mesh hits
+        // the 65,535-vertex / 16-bit index limit) — text beyond it is present but invisible. The
+        // whole field (typed prose + any uploaded file) is capped at this: maxLength blocks
+        // typing past it, and an upload that would overflow it is rejected.
+        private const int MaxDescriptionChars = 16000;
+
+        // Reject before reading so a huge file can't block the main thread in File.ReadAllText;
+        // the character cap above is the real limit. Decimal MB matches FormatFileSize ("1 MB").
+        private const long MaxUploadBytes = 1 * 1_000_000;
+
+        // The OS file picker's extension filter is only a hint the user can bypass
+        // ("All files"), so the selection is re-checked against this allowlist.
+        private static readonly string[] AllowedUploadExtensions = { "txt", "md", "json" };
+
         /// <summary>Creates the project description input screen UI with a text area, file upload, and AI provider state.</summary>
         /// <param name="projectDescription">The initial project description text to display.</param>
         /// <param name="onDescriptionChanged">Callback invoked with the updated text whenever the description changes.</param>
@@ -80,7 +94,7 @@ namespace Meta.HandReadinessTool.Editor.UI
             var headerSection = new VisualElement();
             headerSection.style.paddingBottom = RLDSConstants.Spacing.Size2XL;
 
-            var heading = new Label("Tell us about your project");
+            var heading = new Label("Tell us about your project (Optional)");
             heading.AddToClassList(RLDSConstants.Typography.Heading2);
             heading.style.marginBottom = RLDSConstants.Spacing.Size4XS;
             heading.style.whiteSpace = WhiteSpace.Normal;
@@ -95,7 +109,12 @@ namespace Meta.HandReadinessTool.Editor.UI
             innerCol.Add(headerSection);
 
             var textField = new TextField();
+            // Named so UI automation can target the description field directly.
+            textField.name = "hrt-description-field";
             textField.multiline = true;
+            // Hard-cap total input so typing (and paste) can't push the field past the render
+            // limit; uploads are separately checked against the same budget before insertion.
+            textField.maxLength = MaxDescriptionChars;
             textField.value = projectDescription ?? "";
 #if UNITY_6000_0_OR_NEWER
             textField.textEdition.placeholder =
@@ -108,15 +127,13 @@ namespace Meta.HandReadinessTool.Editor.UI
                 onDescriptionChanged?.Invoke(evt.newValue);
             });
 
-            // Fixed-height scroll box: long descriptions scroll within the field
-            // (scrollbar + mouse wheel) rather than growing the whole section.
+            // Fixed-height scroll box: long descriptions scroll within it rather than growing
+            // the section. The content container must NOT flex-grow — that caps it to the
+            // viewport and clips long content with no way to scroll to the hidden part.
             var textAreaBox = new ScrollView(ScrollViewMode.Vertical);
             textAreaBox.verticalScrollerVisibility = ScrollerVisibility.Auto;
             textAreaBox.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             textAreaBox.AddToClassList(HandReadinessStyles.Description.TextareaBox);
-            // Let the field fill the box height: the scroll content stretches to
-            // the viewport when short, and overflows (scrolls) when long.
-            textAreaBox.contentContainer.style.flexGrow = 1;
             textAreaBox.Add(textField);
 
             var contentSection = new VisualElement();
@@ -140,6 +157,10 @@ namespace Meta.HandReadinessTool.Editor.UI
             fileCardContainer.style.marginBottom = RLDSConstants.Spacing.SizeSM;
             fileCardContainer.style.display = DisplayStyle.None;
 
+            // The exact text block inserted by the most recent upload, so a later upload or
+            // card removal can replace/remove just that block without touching user-typed text.
+            string previousUploadBlock = null;
+
             var uploadButton = new UnityEngine.UIElements.Button(() =>
             {
                 string path = EditorUtility.OpenFilePanel("Select File", "", "txt,md,json");
@@ -154,25 +175,107 @@ namespace Meta.HandReadinessTool.Editor.UI
                 }
                 catch { /* file metadata read may fail — that's tracked below as part of the read error */ }
 
+                void SendUploadRejected(string errorKind, string errorMessage)
+                {
+                    HandReadinessTelemetry.SendEvent(
+                        HandReadinessTelemetryConstants.FalcoEventName.ProjectDescriptionFileUploaded,
+                        evt =>
+                        {
+                            evt.SetMetadata(HandReadinessTelemetryConstants.AnnotationType.Success, false);
+                            evt.SetMetadata(
+                                HandReadinessTelemetryConstants.AnnotationType.FileExtension,
+                                extForTelemetry);
+                            evt.SetMetadata(
+                                HandReadinessTelemetryConstants.AnnotationType.FileSizeBytes,
+                                fileSizeForTelemetry);
+                            evt.SetMetadata(
+                                HandReadinessTelemetryConstants.AnnotationType.ErrorKind,
+                                errorKind);
+                            evt.SetMetadata(
+                                HandReadinessTelemetryConstants.AnnotationType.ErrorMessage,
+                                errorMessage);
+                        });
+                }
+
+                // Re-validate the actual selection: the picker's filter is only a hint on some platforms.
+                if (Array.IndexOf(AllowedUploadExtensions, extForTelemetry) < 0)
+                {
+                    EditorUtility.DisplayDialog(
+                        "Unsupported file type",
+                        "Only .txt, .md, and .json files are supported. Please choose a different file.",
+                        "OK");
+                    SendUploadRejected(
+                        HandReadinessTelemetryConstants.ErrorKind.UnsupportedFormat,
+                        "unsupported_format");
+                    return;
+                }
+
+                // Validate size before reading: an empty file gives the AI no context,
+                // and a huge file would freeze the Editor when read into memory below.
+                if (fileSizeForTelemetry == 0)
+                {
+                    EditorUtility.DisplayDialog(
+                        "Empty file",
+                        "The selected file is empty. Please upload a file with content.",
+                        "OK");
+                    SendUploadRejected(HandReadinessTelemetryConstants.ErrorKind.FileEmpty, "empty_file");
+                    return;
+                }
+                if (fileSizeForTelemetry > MaxUploadBytes)
+                {
+                    EditorUtility.DisplayDialog(
+                        "File too large",
+                        $"File size exceeds the maximum limit of {FormatFileSize(MaxUploadBytes)}. " +
+                        "Please upload a smaller file.",
+                        "OK");
+                    SendUploadRejected(HandReadinessTelemetryConstants.ErrorKind.FileTooLarge, "file_too_large");
+                    return;
+                }
+
                 try
                 {
                     string fileContent = File.ReadAllText(path);
                     string fileName = Path.GetFileName(path);
                     long fileSize = new FileInfo(path).Length;
 
-                    string currentText = textField.value;
-                    if (!string.IsNullOrEmpty(currentText))
-                        currentText += "\n\n--- Uploaded from: " + fileName + " ---\n\n";
-                    currentText += fileContent;
+                    // A new upload replaces the previous block so the single file card always
+                    // matches the description content, rather than silently concatenating files.
+                    string baseText = textField.value;
+                    if (!string.IsNullOrEmpty(previousUploadBlock) && baseText.Contains(previousUploadBlock))
+                        baseText = baseText.Replace(previousUploadBlock, "");
 
+                    string separator = string.IsNullOrEmpty(baseText) ? "" : "\n\n";
+                    string uploadBlock = separator + "--- Uploaded from: " + fileName + " ---\n\n" + fileContent;
+                    string currentText = baseText + uploadBlock;
+
+                    // Reject rather than truncate: the whole field must stay under the render
+                    // limit, and silently dropping part of the file would send the AI less than
+                    // the user believes they attached.
+                    if (currentText.Length > MaxDescriptionChars)
+                    {
+                        EditorUtility.DisplayDialog(
+                            "File too large",
+                            $"Adding this file would exceed the {MaxDescriptionChars:N0}-character limit for the " +
+                            "project description. Please upload a smaller file or shorten your description.",
+                            "OK");
+                        SendUploadRejected(HandReadinessTelemetryConstants.ErrorKind.FileTooLarge, "file_too_large");
+                        return;
+                    }
+
+                    previousUploadBlock = uploadBlock;
                     textField.value = currentText;
                     onDescriptionChanged?.Invoke(currentText);
 
                     fileCardContainer.Clear();
                     fileCardContainer.Add(CreateFileCard(fileName, fileSize, () =>
                     {
-                        textField.value = "";
-                        onDescriptionChanged?.Invoke("");
+                        // Remove only the uploaded block, preserving any user-typed text.
+                        string remaining = textField.value;
+                        if (!string.IsNullOrEmpty(previousUploadBlock) && remaining.Contains(previousUploadBlock))
+                            remaining = remaining.Replace(previousUploadBlock, "");
+                        previousUploadBlock = null;
+                        textField.value = remaining;
+                        onDescriptionChanged?.Invoke(remaining);
                         fileCardContainer.style.display = DisplayStyle.None;
 
                         HandReadinessTelemetry.SendEvent(
@@ -269,12 +372,7 @@ namespace Meta.HandReadinessTool.Editor.UI
 
             var backButton = HandReadinessResources.CreateBackButton("Back", onBack);
             var nextButton = HandReadinessResources.CreateNextButton("Next", onNext);
-            HandReadinessResources.SetButtonEnabled(nextButton, !string.IsNullOrWhiteSpace(projectDescription));
-
-            textField.RegisterValueChangedCallback(evt =>
-            {
-                HandReadinessResources.SetButtonEnabled(nextButton, !string.IsNullOrWhiteSpace(evt.newValue));
-            });
+            // The project description is optional — Next stays enabled even when empty.
 
             container.Add(HandReadinessResources.CreateFooter(backButton, nextButton));
 

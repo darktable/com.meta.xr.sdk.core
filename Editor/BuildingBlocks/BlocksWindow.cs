@@ -78,6 +78,7 @@ namespace Meta.XR.BuildingBlocks.Editor
             {
                 Owner = Utils.ToolDescriptor,
                 Uid = "TutorialCompleted",
+                Label = "Tutorial Completed",
                 OldKey = "OVRProjectSetup.BuildingBlocksTutorialCompleted",
                 Default = false
             };

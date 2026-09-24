@@ -38,6 +38,21 @@ public class OVRManagerEditor : Editor
 
     private const string kOVRManagerEditorExpandedSectionsKey = "OVRManagerEditor_ExpandedSections";
     private const string kOVRManagerEditorActiveTargetPlatformKey = "OVRManagerEditor_ActiveTargetPlaform";
+    private const int MaxFovSimulationHighlightAttempts = 5;
+#if UNITY_6000_4_OR_NEWER
+    private static readonly EntityId NoFovSimulationHighlightTarget = EntityId.None;
+    private static EntityId _fovSimulationHighlightTargetId = EntityId.None;
+
+    private static EntityId GetFovSimulationHighlightId(OVRManager manager) => manager.GetEntityId();
+#else
+    private const int NoFovSimulationHighlightTarget = 0;
+    private static int _fovSimulationHighlightTargetId;
+
+    private static int GetFovSimulationHighlightId(OVRManager manager) => manager.GetInstanceID();
+#endif
+    private static bool _fovSimulationHighlightStatePrepared;
+    private static bool _fovSimulationHighlightScheduled;
+    private static int _fovSimulationHighlightAttempts;
 
     class Styles
     {
@@ -77,6 +92,7 @@ public class OVRManagerEditor : Editor
         ProfilingMetrics = (1 << 11),
         ProjectConfig = (1 << 12),
 
+        DeviceSimulation = (1 << 15),
     }
 
     private bool _expandedEditorSectionsSet = false;
@@ -138,12 +154,24 @@ public class OVRManagerEditor : Editor
         OVRRuntimeSettings runtimeSettings = OVRRuntimeSettings.GetRuntimeSettings();
         OVRProjectConfig projectConfig = OVRProjectConfig.CachedProjectConfig;
         OVRManager manager = (OVRManager)target;
+        bool highlightFovSimulation = _fovSimulationHighlightTargetId != NoFovSimulationHighlightTarget &&
+            _fovSimulationHighlightTargetId == GetFovSimulationHighlightId(manager);
+        if (highlightFovSimulation && !_fovSimulationHighlightStatePrepared)
+        {
+            _activeTargetPlatform = TargetPlatform.Quest;
+            _activeTargetPlatformSet = true;
+            _expandedEditorSections |= EditorSection.ProjectConfig;
+            OVRProjectConfigEditor.selectedTab = OVRProjectConfigEditor.ProjectConfigTab.Experimental;
+            _fovSimulationHighlightStatePrepared = true;
+        }
 
         DrawTargetPlatformMenu();
 
         DrawTargetDevicesSection(projectConfig);
 
         DrawProjectConfigSection(projectConfig);
+
+        DrawDeviceSimulationSection();
 
 
         DrawPerformanceQualitySection(manager, runtimeSettings, ref modified);
@@ -173,6 +201,86 @@ public class OVRManagerEditor : Editor
             }
         }
     }
+
+    internal static void HighlightFovSimulationSetting(OVRManager manager)
+    {
+        if (manager == null)
+        {
+            return;
+        }
+
+        ResetFovSimulationHighlightState();
+        _fovSimulationHighlightTargetId = GetFovSimulationHighlightId(manager);
+        _fovSimulationHighlightStatePrepared = false;
+        Selection.activeGameObject = manager.gameObject;
+        EditorGUIUtility.PingObject(manager.gameObject);
+        if (!Application.isBatchMode)
+        {
+            EditorApplication.ExecuteMenuItem("Window/General/Inspector");
+        }
+        ScheduleFovSimulationHighlightAttempt();
+    }
+
+    private static void ScheduleFovSimulationHighlightAttempt()
+    {
+        if (_fovSimulationHighlightScheduled || _fovSimulationHighlightTargetId == NoFovSimulationHighlightTarget)
+        {
+            return;
+        }
+
+        _fovSimulationHighlightScheduled = true;
+        EditorApplication.delayCall += HighlightPendingFovSimulationSetting;
+    }
+
+    private static void HighlightPendingFovSimulationSetting()
+    {
+        _fovSimulationHighlightScheduled = false;
+        if (_fovSimulationHighlightTargetId == NoFovSimulationHighlightTarget)
+        {
+            ResetFovSimulationHighlightState();
+            return;
+        }
+
+        var highlightTarget =
+#if UNITY_6000_3_OR_NEWER
+            EditorUtility.EntityIdToObject(_fovSimulationHighlightTargetId);
+#else
+            EditorUtility.InstanceIDToObject(_fovSimulationHighlightTargetId);
+#endif
+        if (!(highlightTarget is OVRManager))
+        {
+            ResetFovSimulationHighlightState();
+            return;
+        }
+
+        bool highlightSucceeded = Highlighter.Highlight(
+            "Inspector",
+            OVRProjectConfigEditor.HighlightLabel.FovSimulation.ToString());
+        CompleteFovSimulationHighlightAttempt(highlightSucceeded);
+    }
+
+    private static void CompleteFovSimulationHighlightAttempt(bool highlightSucceeded)
+    {
+        _fovSimulationHighlightAttempts++;
+        if (highlightSucceeded ||
+            _fovSimulationHighlightAttempts >= MaxFovSimulationHighlightAttempts)
+        {
+            ResetFovSimulationHighlightState();
+            return;
+        }
+
+        ScheduleFovSimulationHighlightAttempt();
+    }
+
+    private static void ResetFovSimulationHighlightState()
+    {
+        EditorApplication.delayCall -= HighlightPendingFovSimulationSetting;
+        _fovSimulationHighlightTargetId = NoFovSimulationHighlightTarget;
+        _fovSimulationHighlightStatePrepared = false;
+        _fovSimulationHighlightScheduled = false;
+        _fovSimulationHighlightAttempts = 0;
+    }
+
     private bool BeginExpandSection(EditorSection section, string name, string docLink = null)
     {
 
@@ -281,6 +389,23 @@ public class OVRManagerEditor : Editor
         }
 
         OVRProjectConfigEditor.DrawTargetDeviceInspector(projectConfig, drawLabel: false);
+        EndExpandSection();
+    }
+
+    private void DrawDeviceSimulationSection()
+    {
+        if (_activeTargetPlatform != TargetPlatform.Link)
+        {
+            return;
+        }
+
+        if (!BeginExpandSection(EditorSection.DeviceSimulation, "Device Simulation"))
+        {
+            EndExpandSection();
+            return;
+        }
+
+        OVRProjectConfigEditor.DrawEditorFovSimulationInspector();
         EndExpandSection();
     }
 

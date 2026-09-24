@@ -29,7 +29,6 @@ namespace Meta.XR.BuildingBlocks.Editor
         public const string Passthrough = "f0540b20-dfd6-420e-b20d-c270f88dc77e";
         public const string RoomModel = "be2b0240-1191-4e84-90bb-40fb6d75848b";
         public const string PassthroughOverlay = "40e08c51-14aa-4822-927d-5fe79943b5b4";
-        public const string SurfaceProjectedPassthrough = "19c06269-24b5-4657-a433-21a6f80dbabf";
         public const string PassthroughWindow = "4f06f550-8209-46c8-a4c9-879a368560f6";
         public const string SampleSpatialAnchorController = "1f4566e8-f4ba-46d2-9e47-3748c9869766";
         public const string SpatialAnchorCore = "a383f5ea-3856-4c23-a11c-7fdbb9408035";

@@ -41,7 +41,10 @@ namespace Meta.HandReadinessTool.Editor
     [InitializeOnLoad]
     internal static class HandReadinessPromptProvider
     {
-        private const ulong PromptContentId = 27108647752099792UL;
+        // bb_content id of the remote Device Readiness prompt payload (system prompt +
+        // references, mirroring Knowledge/SKILL.md). The bundled SKILL.md + reference
+        // markdowns are the offline fallback. Bump when uploading a new payload version.
+        private const ulong PromptContentId = 27304701392565416UL;
         private const string CacheFileName = "hrt_prompt.json";
         private const int SupportedSchemaVersion = 1;
 
@@ -88,11 +91,12 @@ namespace Meta.HandReadinessTool.Editor
 #pragma warning restore CS4014
         }
 
-        private static async Task FetchAndSwap()
+        private static async Task FetchAndSwap(bool clearCache = false)
         {
             try
             {
-                var result = await RemoteJsonContent<PromptPayload>.Create(CacheFileName, PromptContentId);
+                var result = await RemoteJsonContent<PromptPayload>.Create(
+                    CacheFileName, PromptContentId, clearCache: clearCache);
                 if (!result.IsSuccess)
                 {
                     EmitFailure(TelemetryConstants.ErrorKind.PromptFetchFailed, result.ErrorMessage);
@@ -156,9 +160,6 @@ namespace Meta.HandReadinessTool.Editor
 
         private static void EmitSuccess(int systemPromptChars, int referenceCount, int schemaVersion)
         {
-            Debug.Log(
-                $"[HRT] PromptProvider: loaded remote prompt " +
-                $"(systemPrompt={systemPromptChars}c, references={referenceCount}, schema v{schemaVersion}).");
             HandReadinessTelemetry.SendEvent(
                 TelemetryConstants.FalcoEventName.PromptFetched,
                 evt =>
@@ -178,10 +179,6 @@ namespace Meta.HandReadinessTool.Editor
 
         private static void EmitFailure(string errorKind, string errorMessage, int? schemaVersion = null)
         {
-            Debug.Log(
-                $"[HRT] PromptProvider: remote fetch did not load prompt ({errorKind}" +
-                (string.IsNullOrEmpty(errorMessage) ? "" : $": {errorMessage}") +
-                ") — falling back to bundled SKILL.md and reference markdowns.");
             HandReadinessTelemetry.SendEvent(
                 TelemetryConstants.FalcoEventName.PromptFetched,
                 evt =>
@@ -218,5 +215,6 @@ namespace Meta.HandReadinessTool.Editor
             public string heading;
             public string content;
         }
+
     }
 }

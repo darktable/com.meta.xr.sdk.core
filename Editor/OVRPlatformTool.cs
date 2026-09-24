@@ -93,7 +93,7 @@ namespace Assets.Oculus.VR.Editor
         private static GUIStyle boldFoldoutStyle;
         private static GUIStyle odhCalloutStyle;
 
-        [MenuItem("Meta/Tools/Oculus Platform Tool")]
+        [MenuItem("Window/Meta/Tools/Oculus Platform Tool", false, 3300)]
         static void Init()
         {
             OVRPlatformTool.log = string.Empty;

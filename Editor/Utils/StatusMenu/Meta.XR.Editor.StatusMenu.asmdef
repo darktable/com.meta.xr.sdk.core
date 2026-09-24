@@ -7,7 +7,9 @@
         "Meta.XR.Editor.Settings",
         "Meta.XR.Editor.Tags",
         "Meta.XR.Editor.ToolingSupport",
-        "Meta.XR.Editor.Id"
+        "Meta.XR.Editor.Id",
+        "Meta.XR.Editor.Callbacks",
+        "Meta.XR.Editor.RemoteContent"
     ],
     "includePlatforms": [
         "Editor"

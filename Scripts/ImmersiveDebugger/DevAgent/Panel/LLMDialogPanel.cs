@@ -20,6 +20,7 @@
 
 using Meta.XR.ImmersiveDebugger.UserInterface.Generic;
 using Meta.XR.ImmersiveDebugger.Utils;
+using Meta.XR.ImmersiveDebugger.XROperator;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -78,16 +79,22 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         private ButtonWithIcon _clearButton;
         private Toggle _cancelButton;
         private Toggle _autoScrollToggle;
+        private Toggle _keyboardToggle;
+        private TouchScreenKeyboard _keyboard;
+        private const string FallbackInputControlName = "DevAgentFallbackInput";
+        private bool _fallbackInputActive;
+        private string _fallbackInputText = "";
+        private bool _fallbackFocusPending;
 
         // Status pill components - AgentBridge
         private Flex _agentBridgeStatusContainer;
         private Toggle _agentBridgeStatusPill;
         private Label _agentBridgeStatusLabel;
 
-        // Status pill components - MCP Bridge
-        private Flex _mcpBridgeStatusContainer;
-        private Toggle _mcpBridgeStatusPill;
-        private Label _mcpBridgeStatusLabel;
+        // Status pill components - XR Operator
+        private Flex _xrOperatorStatusContainer;
+        private Toggle _xrOperatorStatusPill;
+        private Label _xrOperatorStatusLabel;
 
         // Status pill components - Voice
         private Flex _voiceStatusContainer;
@@ -166,8 +173,8 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             // AgentBridge connection status pill (in left container)
             CreateAgentBridgeStatusPill();
 
-            // MCP Bridge connection status pill (in left container)
-            CreateMcpBridgeStatusPill();
+            // XR Operator connection status pill (in left container)
+            CreateXROperatorStatusPill();
 
             // Voice status pill (in left container)
             CreateVoiceStatusPill();
@@ -194,6 +201,13 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             _cancelButton.IconStyle = Style.Load<ImageStyle>("StopIcon");
             _cancelButton.Callback = OnCancelButtonClicked;
             _cancelButton.State = false;
+
+            // Keyboard toggle — reveals a text-input row for typing prompts instead of talking.
+            _keyboardToggle = _controlsContainer.Append<Toggle>("keyboardToggle");
+            _keyboardToggle.LayoutStyle = Style.Load<LayoutStyle>("ConsoleButton");
+            _keyboardToggle.Icon = Resources.Load<Texture2D>("Textures/keyboard");
+            _keyboardToggle.IconStyle = Style.Load<ImageStyle>("KeyboardIcon");
+            _keyboardToggle.Callback = OnKeyboardToggleClicked;
 
             // Conversation history scroll view with regular Flex (no virtualization)
             _conversationScrollView = mainFlex.Append<ScrollView>("conversation");
@@ -251,11 +265,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             _conversationManager.OnVoiceStatusChanged += OnVoiceStatusChanged;
             _conversationManager.OnConversationActiveChanged += OnConversationActiveChanged;
 
-            // Subscribe to MCP Bridge connection state changes
-            if (_controller?.McpIntegration != null)
-            {
-                _controller.McpIntegration.OnConnectionStateChanged += OnMcpBridgeConnectionStateChanged;
-            }
+            XROperatorRuntimeStatus.OnConnectionStatusChanged += OnXROperatorConnectionStateChanged;
         }
 
         private void UnsubscribeFromManagerEvents()
@@ -271,10 +281,7 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
                 _conversationManager.OnConversationActiveChanged -= OnConversationActiveChanged;
             }
 
-            if (_controller?.McpIntegration != null)
-            {
-                _controller.McpIntegration.OnConnectionStateChanged -= OnMcpBridgeConnectionStateChanged;
-            }
+            XROperatorRuntimeStatus.OnConnectionStatusChanged -= OnXROperatorConnectionStateChanged;
 
             if (_conversationScrollView != null)
             {
@@ -285,6 +292,10 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         private void OnDestroy()
         {
             UnsubscribeFromManagerEvents();
+            // The keyboard-polling coroutine stops with this MonoBehaviour; drop its references so a
+            // teardown mid-input doesn't leave the OS keyboard or the fallback field dangling.
+            _keyboard = null;
+            _fallbackInputActive = false;
         }
 
         #region Event Handlers from ConversationManager
@@ -336,9 +347,9 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             UpdateAgentBridgeStatusPill(status);
         }
 
-        private void OnMcpBridgeConnectionStateChanged(bool isConnected)
+        private void OnXROperatorConnectionStateChanged(XROperatorConnectionStatus status, string message)
         {
-            UpdateMcpBridgeStatusPill(isConnected);
+            UpdateXROperatorStatusPill(status);
         }
 
         private void OnVoiceStatusChanged(ConversationManager.VoiceStatus status)
@@ -351,6 +362,13 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             if (_cancelButton != null)
             {
                 _cancelButton.State = isActive;
+            }
+
+            if (_keyboardToggle != null)
+            {
+                // Swap to an all-grey style (its hover colour is also grey, so hovering doesn't
+                // highlight it) and gate typing while the agent responds; restore when idle.
+                _keyboardToggle.IconStyle = Style.Load<ImageStyle>(isActive ? "KeyboardIconDisabled" : "KeyboardIcon");
             }
 
             if (isActive)
@@ -517,21 +535,13 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             label.RectTransform.offsetMin = Vector2.zero;
             label.RectTransform.offsetMax = Vector2.zero;
 
-#if HAS_META_VOICE_SDK
             var gestureName = GetGestureDisplayName(RuntimeSettings.Instance.HandPushToTalkGesture);
             var buttonName = GetButtonDisplayName(RuntimeSettings.Instance.PushToTalkButton);
             label.Content =
                 "[Experimental] AI Assistant\n\n" +
-                $"Connect to AI Agents on your Unity Editor,\npinch with <b>{gestureName}</b> " +
-                $"or press controller <b>{buttonName}</b> button to talk";
-#else
-            // Voice input is compiled out without the Voice SDK, so the pinch/press instructions would
-            // do nothing with no error to explain why. Tell the user what's missing instead.
-            label.Content =
-                "[Experimental] AI Assistant\n\n" +
-                "Voice input requires the <b>Meta XR Voice SDK</b>\n(com.meta.xr.sdk.voice), which is not installed.\n" +
-                "Install it via the Package Manager to talk to AI Agents from your headset.";
-#endif
+                "Connect to AI Agents on your Unity Editor.\n" +
+                $"Pinch with <b>{gestureName}</b> or press controller <b>{buttonName}</b> to talk,\n" +
+                "or tap the <b>keyboard</b> button to type.";
             label.Text.alignment = TextAnchor.MiddleCenter;
             label.Text.color = new Color(1f, 1f, 1f, 0.25f);
             label.Text.fontSize = 18;
@@ -540,7 +550,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             label.Text.supportRichText = true;
         }
 
-#if HAS_META_VOICE_SDK
         private static string GetGestureDisplayName(HandPinchGesture gesture)
         {
             return gesture switch
@@ -563,7 +572,6 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
                 _ => "A/X"
             };
         }
-#endif
 
         private void ShowWelcomeWatermark()
         {
@@ -697,20 +705,20 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             UpdateAgentBridgeStatusPill(_conversationManager?.CurrentConnectionStatus ?? ConversationManager.ConnectionStatus.Disconnected);
         }
 
-        private void CreateMcpBridgeStatusPill()
+        private void CreateXROperatorStatusPill()
         {
-            _mcpBridgeStatusContainer = _leftStatusContainer.Append<Flex>("mcpBridgeStatusContainer");
-            _mcpBridgeStatusContainer.LayoutStyle = Style.Load<LayoutStyle>("StatusPillContainer");
+            _xrOperatorStatusContainer = _leftStatusContainer.Append<Flex>("xrOperatorStatusContainer");
+            _xrOperatorStatusContainer.LayoutStyle = Style.Load<LayoutStyle>("StatusPillContainer");
 
-            _mcpBridgeStatusPill = _mcpBridgeStatusContainer.Append<Toggle>("mcpBridgeStatusPill");
-            _mcpBridgeStatusPill.LayoutStyle = Style.Load<LayoutStyle>("StatusPill");
+            _xrOperatorStatusPill = _xrOperatorStatusContainer.Append<Toggle>("xrOperatorStatusPill");
+            _xrOperatorStatusPill.LayoutStyle = Style.Load<LayoutStyle>("StatusPill");
 
-            _mcpBridgeStatusLabel = _mcpBridgeStatusContainer.Append<Label>("mcpBridgeStatusLabel");
-            _mcpBridgeStatusLabel.LayoutStyle = Style.Load<LayoutStyle>("StatusPillLabel");
-            _mcpBridgeStatusLabel.TextStyle = Style.Load<TextStyle>("StatusPillText");
-            _mcpBridgeStatusLabel.Content = "MCPBridge: Disconnected";
+            _xrOperatorStatusLabel = _xrOperatorStatusContainer.Append<Label>("xrOperatorStatusLabel");
+            _xrOperatorStatusLabel.LayoutStyle = Style.Load<LayoutStyle>("StatusPillLabel");
+            _xrOperatorStatusLabel.TextStyle = Style.Load<TextStyle>("StatusPillText");
+            _xrOperatorStatusLabel.Content = "XR Operator: Unavailable";
 
-            UpdateMcpBridgeStatusPill(_controller?.McpIntegration?.IsConnected ?? false);
+            UpdateXROperatorStatusPill(XROperatorRuntimeStatus.ConnectionStatus);
         }
 
         private void CreateVoiceStatusPill()
@@ -747,17 +755,19 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
             _agentBridgeStatusLabel.Content = $"AgentBridge: {status}";
         }
 
-        private void UpdateMcpBridgeStatusPill(bool isConnected)
+        private void UpdateXROperatorStatusPill(XROperatorConnectionStatus status)
         {
-            if (_mcpBridgeStatusPill == null || _mcpBridgeStatusLabel == null) return;
+            if (_xrOperatorStatusPill == null || _xrOperatorStatusLabel == null) return;
+
+            var isConnected = status == XROperatorConnectionStatus.Connected;
 
             var pillStyle = Style.Load<ImageStyle>("StatusPill");
 
-            _mcpBridgeStatusPill.IconStyle = pillStyle;
-            _mcpBridgeStatusPill.Icon = pillStyle.icon;
-            _mcpBridgeStatusPill.State = isConnected;
+            _xrOperatorStatusPill.IconStyle = pillStyle;
+            _xrOperatorStatusPill.Icon = pillStyle.icon;
+            _xrOperatorStatusPill.State = isConnected;
 
-            _mcpBridgeStatusLabel.Content = $"MCPBridge: {(isConnected ? "Connected" : "Disconnected")}";
+            _xrOperatorStatusLabel.Content = $"XR Operator: {status}";
         }
 
         private void UpdateVoiceStatusPill(ConversationManager.VoiceStatus status)
@@ -810,6 +820,97 @@ namespace Meta.XR.ImmersiveDebugger.DevAgent
         private void OnCancelButtonClicked()
         {
             _conversationManager.CancelConversation();
+        }
+
+        private void OnKeyboardToggleClicked()
+        {
+            // Disabled while the agent is responding — the toggle is greyed (State=false) then.
+            if (_conversationManager != null && _conversationManager.IsConversationActive)
+            {
+                return;
+            }
+
+            // On device, raise the OS system keyboard as an overlay and submit what the user types
+            // when they press Done. TouchScreenKeyboard.isSupported is false in the Editor, on
+            // desktop, and over PC-VR/Link, where Open() returns null — fall back to an IMGUI text
+            // field so hardware-keyboard typing still works there.
+            if (TouchScreenKeyboard.isSupported)
+            {
+                _keyboard = TouchScreenKeyboard.Open(string.Empty, TouchScreenKeyboardType.Default);
+                if (_keyboard != null)
+                {
+                    StartCoroutine(PollKeyboard(_keyboard));
+                }
+            }
+            else
+            {
+                _fallbackInputText = "";
+                _fallbackInputActive = true;
+                _fallbackFocusPending = true;
+            }
+        }
+
+        private IEnumerator PollKeyboard(TouchScreenKeyboard keyboard)
+        {
+            while (keyboard.status == TouchScreenKeyboard.Status.Visible)
+            {
+                yield return null;
+            }
+
+            if (keyboard.status == TouchScreenKeyboard.Status.Done &&
+                !string.IsNullOrWhiteSpace(keyboard.text))
+            {
+                _controller.Integration.SendTextMessage(keyboard.text);
+            }
+
+            _keyboard = null;
+        }
+
+        // Editor/desktop/Link fallback: TouchScreenKeyboard is unavailable there, so accept typed
+        // input through an IMGUI text field (rendered in the Game view) and submit on Enter.
+        private void OnGUI()
+        {
+            if (!_fallbackInputActive)
+            {
+                return;
+            }
+
+            var e = Event.current;
+            if (e.type == EventType.KeyDown &&
+                (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter))
+            {
+                SubmitFallbackInput();
+                e.Use();
+                return;
+            }
+            if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
+            {
+                _fallbackInputActive = false;
+                e.Use();
+                return;
+            }
+
+            const float width = 480f;
+            const float height = 24f;
+            var rect = new Rect((Screen.width - width) / 2f, Screen.height - height - 40f, width, height);
+            GUI.SetNextControlName(FallbackInputControlName);
+            _fallbackInputText = GUI.TextField(rect, _fallbackInputText);
+            if (_fallbackFocusPending)
+            {
+                GUI.FocusControl(FallbackInputControlName);
+                _fallbackFocusPending = false;
+            }
+        }
+
+        private void SubmitFallbackInput()
+        {
+            var text = _fallbackInputText;
+            _fallbackInputText = "";
+            _fallbackInputActive = false;
+            if (!string.IsNullOrWhiteSpace(text) && _controller?.Integration != null)
+            {
+                _controller.Integration.SendTextMessage(text);
+            }
         }
 
         #endregion

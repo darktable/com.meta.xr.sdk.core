@@ -55,13 +55,7 @@ namespace Meta.XR.Editor.Settings
         {
         }
 
-        [Serializable]
-        public class IntProperties : SerializableDictionary<string, int>
-        {
-        }
-
         [SerializeField] private BoolProperties boolProperties = new();
-        [SerializeField] private IntProperties intProperties = new();
 
         private static ProjectSettings _config;
 
@@ -86,28 +80,6 @@ namespace Meta.XR.Editor.Settings
         public void RemoveProjectBool(string key)
         {
             boolProperties.Remove(key);
-            EditorUtility.SetDirty(this);
-        }
-
-        public int GetProjectInt(string key, int defaultValue)
-        {
-            if (!intProperties.TryGetValue(key, out var value))
-            {
-                value = defaultValue;
-            }
-
-            return value;
-        }
-
-        public void SetProjectInt(string key, int value)
-        {
-            intProperties[key] = value;
-            EditorUtility.SetDirty(this);
-        }
-
-        public void RemoveProjectInt(string key)
-        {
-            intProperties.Remove(key);
             EditorUtility.SetDirty(this);
         }
 

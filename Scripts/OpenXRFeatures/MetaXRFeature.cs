@@ -44,7 +44,7 @@ namespace Meta.XR
         uiName: "Meta XR Feature",
         desc: "Meta XR Feature for OpenXR, enables Meta features for Quest devices",
         version: "0.0.1",
-        targetApiVersion: "1.1.45",
+        targetApiVersion: "1.1.54",
         extensions: new[]
         {
             "XR_KHR_vulkan_enable",
@@ -106,7 +106,7 @@ namespace Meta.XR
             "XR_FB_composition_layer_depth_test",
             "XR_FB_haptic_amplitude_envelope",
             "XR_FB_haptic_pcm",
-            "XR_EXTX1_haptic_parametric",
+            "XR_EXT_haptic_parametric",
             "XR_META_local_dimming",
             "XR_META_hand_tracking_wide_motion_mode",
             "XR_EXT_hand_tracking_data_source",
@@ -174,7 +174,7 @@ namespace Meta.XR
         public struct OpenXRCommand
         {
             public OpenXRNativeFuncs.xrApplyHapticFeedback xrApplyHapticFeedback;
-            public OpenXRNativeFuncs.xrHapticParametricGetPropertiesEXTX1 xrHapticParametricGetPropertiesEXTX1;
+            public OpenXRNativeFuncs.xrHapticParametricGetPropertiesEXT xrHapticParametricGetPropertiesEXT;
             public OpenXRNativeFuncs.xrGetDeviceSampleRateFB xrGetDeviceSampleRateFB;
             public OpenXRNativeFuncs.xrResumeSimultaneousHandsAndControllersTrackingMETA xrResumeSimultaneousHandsAndControllersTrackingMETA;
             public OpenXRNativeFuncs.xrPauseSimultaneousHandsAndControllersTrackingMETA xrPauseSimultaneousHandsAndControllersTrackingMETA;
@@ -396,7 +396,7 @@ namespace Meta.XR
 
         protected override void BindFunctionPointers()
         {
-            _parametricHapticsEnabled = OpenXRRuntime.IsExtensionEnabled("XR_EXTX1_haptic_parametric");
+            _parametricHapticsEnabled = OpenXRRuntime.IsExtensionEnabled("XR_EXT_haptic_parametric");
             _hapticPcmEnabled = OpenXRRuntime.IsExtensionEnabled("XR_FB_haptic_pcm");
             _hapticsAmplitudeEnvelopeEnabled = OpenXRRuntime.IsExtensionEnabled("XR_FB_haptic_amplitude_envelope");
             _simultaneousHandsAndControllersEnabled = OpenXRRuntime.IsExtensionEnabled("XR_META_simultaneous_hands_and_controllers");
@@ -433,9 +433,9 @@ namespace Meta.XR
                             Type = XrSystemProperties.StructureType,
                         };
 
-                        var hapticsParametricProperties = new XrSystemHapticParametricPropertiesEXTX1
+                        var hapticsParametricProperties = new XrSystemHapticParametricPropertiesEXT
                         {
-                            Type = XrSystemHapticParametricPropertiesEXTX1.StructureType,
+                            Type = XrSystemHapticParametricPropertiesEXT.StructureType,
                             SupportsParametricHaptics = false
                         };
 
@@ -489,7 +489,7 @@ namespace Meta.XR
             }
 
             GetInstanceDelegate(nameof(_command.xrApplyHapticFeedback), out _command.xrApplyHapticFeedback);
-            GetInstanceDelegate(nameof(_command.xrHapticParametricGetPropertiesEXTX1), out _command.xrHapticParametricGetPropertiesEXTX1);
+            GetInstanceDelegate(nameof(_command.xrHapticParametricGetPropertiesEXT), out _command.xrHapticParametricGetPropertiesEXT);
             GetInstanceDelegate(nameof(_command.xrGetDeviceSampleRateFB), out _command.xrGetDeviceSampleRateFB);
             GetInstanceDelegate(nameof(_command.xrResumeSimultaneousHandsAndControllersTrackingMETA), out _command.xrResumeSimultaneousHandsAndControllersTrackingMETA);
             GetInstanceDelegate(nameof(_command.xrPauseSimultaneousHandsAndControllersTrackingMETA), out _command.xrPauseSimultaneousHandsAndControllersTrackingMETA);
