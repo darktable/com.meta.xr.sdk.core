@@ -26,7 +26,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Diagnostics;
 using System.Text;
 using RO = Meta.XR.RuntimeOptimizer.Core;
 using Meta.XR.RuntimeOptimizer.Editor;
@@ -35,29 +34,14 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
 {
     static class CaptureTool
     {
-        /// <summary>Upper bound on any single ADB call issued by the Runtime Optimizer.</summary>
-        /// <remarks>
-        /// Most of these calls run on the editor's main thread, so a command that never returns
-        /// freezes the whole editor with no recovery short of killing the process. The bound is set
-        /// far above what any command here needs -- the longest is the capture itself, which runs for
-        /// the trace duration (3s) -- so a healthy device never reaches it. Raising the capture
-        /// duration past this value would require raising this too.
-        /// </remarks>
         private const int kAdbCommandTimeoutMs = 30000;
-
-        /// <summary>Tighter bound for the <c>ovrgpuprofiler</c> calls.</summary>
-        /// <remarks>
-        /// These complete in well under a second, but they talk to gpuprofserver, which is the part
-        /// that has been observed to wedge. Since they sit directly behind button clicks, they get a
-        /// bound tight enough that a wedged daemon costs a noticeable pause rather than half a minute.
-        /// </remarks>
         private const int kGpuProfilerCommandTimeoutMs = 10000;
 
-        /// <summary>Seconds of render stage trace run to start the stream before a capture.</summary>
+        /// <summary>Seconds of render stage trace run after a launch so What If can profile the GPU.</summary>
         /// <remarks>
-        /// The shortest duration the tool's <c>-t=N</c> form accepts. The capture does not consume
-        /// this trace -- it only has to run and finish -- so there is nothing to gain from a longer
-        /// one, and every extra second is added to the wait behind the Analyze button.
+        /// The shortest duration the tool's <c>-t=N</c> form accepts. Nothing consumes this trace --
+        /// it only has to run and finish -- so there is nothing to gain from a longer one, and every
+        /// extra second is added to the wait behind the Launch button.
         /// </remarks>
         private const int kRenderStagePrimeSeconds = 1;
 
@@ -67,26 +51,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
         /// cold path; the warm path returns on the first poll without ever sleeping.
         /// </remarks>
         private const int kGpuServiceReadyTimeoutMs = 5000;
-
-        /// <summary>Gap between service-state polls, in milliseconds.</summary>
         private const int kGpuServiceReadyPollMs = 250;
-
-        /// <summary>PID of an app process that started before detailed profiling was enabled.</summary>
-        /// <remarks>
-        /// Detailed profiling is injected into a process at Vulkan/GL init, so it "only applies to
-        /// applications started after this mode is started". A process that was up before the enable
-        /// therefore renders un-instrumented for its whole lifetime: not just the capture that armed
-        /// the device, but every later one too, even though the device reads as armed by then.
-        /// Remembering the PID is what keeps the diagnosis attached to the process it describes; it
-        /// stops applying the moment the app is relaunched under a new PID, which
-        /// <see cref="LaunchApp"/> makes explicit by clearing this rather than relying on the new
-        /// process happening to get a different number.
-        ///
-        /// Measured on a Phoenix (HzOS 10000) with the capture config below, counting
-        /// `surface#...MSAA` slices on the `Gpu (<pkg>)` track: app launched after the enable, 355
-        /// slices; app already running when the enable ran, 0. `ovrgpuprofiler -e` reported success
-        /// both times.
-        /// </remarks>
         static private int unprofiledAppPid = -1;
 
         /// <summary>Bound for the <c>adb pull</c> transfers.</summary>
@@ -101,9 +66,21 @@ namespace Meta.XR.RuntimeOptimizer.Editor.PerformanceInsight
         static private Thread captureThread = null;
         static private List<string> connectedDevices = new List<string>();
         private const string outFile = "/data/misc/perfetto-traces/trace";
+        private const string gpuStreamFlushOutFile = "/data/misc/perfetto-traces/ro_gpu_stream_flush";
         static private System.Object lockObj = new System.Object();
         static private int metricProcessWorkInQueue = 0;
         static public int lastKnownPID = -1;
+
+        /// <summary>Set when the app may have started a render stage trace of its own.</summary>
+        /// <remarks>See <see cref="FlushGpuStreamAfterAppTrace"/>.</remarks>
+        static private volatile bool appGpuTraceMayBeReleased = false;
+
+        /// <summary>The app process that has already returned a quick perf GPU time.</summary>
+        /// <remarks>
+        /// From then on the app answers a quick perf requested while frozen from that cached value
+        /// instead of tracing. Before it, the first freeze of every launch traces.
+        /// </remarks>
+        static private int appGpuTimeCachedPid = -1;
 
         static private string LowOverheadCaptureConfig = @"
 buffers {
@@ -177,6 +154,12 @@ trigger_config {
         // while differing 5.7% across durations, so it is bias rather than noise -- and CPU
         // run-to-run spread is 7x worse at 1000ms. 3000ms costs the same wall time as 2000ms
         // because fixed perfetto setup dominates, so there is nothing to buy by going shorter.
+        //
+        // Keep gpu_renderstage out. The only metric render stages feed is "binning" (Binning pass
+        // time per frame), which no insight reads; GPU frame time, MSAA and bin count come from
+        // surface workloads and the rest from the GPU counters. Without them the trace loses its
+        // per-stage slices (Bin, Render, LoadColor, StoreColor, StoreDepthStencil), which only
+        // matter when reading it by hand.
         static private string captureConfig = @"
 buffers {
   size_kb: 4096
@@ -231,13 +214,32 @@ data_sources {
       disabled_categories: ""gpu_renderstage""
       disabled_categories: ""gpu_surface_workload""
       enabled_categories: ""gpu_profiling_service""
-      enabled_categories: ""gpu_renderstage""
       enabled_categories: ""gpu_surface_workload""
-      enabled_categories: ""vulkan_os_layer""
     }
   }
 }
 duration_ms: 3000
+";
+
+        // Its trace is thrown away; see FlushGpuStreamAfterAppTrace for why it runs at all. Surface
+        // workloads only, like captureConfig, so it stays off the render stage crash path.
+        static private string GpuStreamFlushConfig = @"
+buffers {
+  size_kb: 4096
+  fill_policy: DISCARD
+}
+data_sources {
+  config {
+    name: ""track_event""
+    target_buffer: 0
+    track_event_config {
+      disabled_categories: ""*""
+      enabled_categories: ""gpu_profiling_service""
+      enabled_categories: ""gpu_surface_workload""
+    }
+  }
+}
+duration_ms: 1000
 ";
 
         static public string RemoveLastFolderFromPath(string path)
@@ -574,14 +576,7 @@ duration_ms: 3000
 
             RO.Util.DebugLog($"Successfully launched app: {packageActivityPath}");
 
-            // A relaunch retires the un-instrumented process that unprofiledAppPid describes: Init
-            // arms and waits for the service before calling this, so the process starting here does
-            // pick up detailed profiling. Clearing is also what bounds the record's lifetime -- it
-            // is keyed on PID alone, and Android recycles PIDs, so a record left set for the whole
-            // editor session would eventually match an unrelated, properly instrumented process and
-            // warn about it. A relaunch driven from outside Runtime Optimizer still leaves the
-            // record standing; the warning is advisory, so that is worth less than the complexity
-            // of tracking process identity beyond the PID.
+            // The new process starts after profiling was enabled.
             unprofiledAppPid = -1;
             return true;
         }
@@ -613,15 +608,6 @@ duration_ms: 3000
             return "";
         }
 
-        /// <param name="waitForGpuService">
-        /// Block until the GPU profiling service is up before returning. Callers that are about to
-        /// launch the app must pass true: detailed profiling reaches a process only at Vulkan/GL
-        /// init, so an app launched while the service is still coming up renders un-instrumented
-        /// for its whole lifetime and every capture taken against it reports `GPU: 0.00ms`. This is
-        /// the first launch of a session, where the service is cold; later launches find it warm,
-        /// which is why the symptom looks intermittent. Editor GUI handlers that are not about to
-        /// launch leave it false, so a wedged device costs them nothing.
-        /// </param>
         static public void Init(string packageName = "", bool shimLayer = false, bool waitForGpuService = false)
         {
             if (!IsADBReady())
@@ -629,10 +615,7 @@ duration_ms: 3000
                 return;
             }
 
-            // connectedDevices is a cache that only the capture and the Update()-driven ValidateAdb
-            // refresh. Arming reads it, and reading it stale is how the arm gets skipped for a whole
-            // session on an editor that has not enumerated a device yet -- which leaves the app
-            // launched below un-instrumented and every capture at GPU: 0.00ms.
+            // Refresh before arming so a cold editor session does not skip the device.
             connectedDevices = adbTool.GetDevices();
 
             string outputString;
@@ -724,34 +707,16 @@ duration_ms: 3000
         /// <remarks>Split out from <see cref="ArmGpuProfiler"/> so the exact command is testable.</remarks>
         private static string BuildGpuProfilerArmCommand(string packageName)
         {
-            // The optional target scopes detailed profiling to the app being analysed.
             string armTarget = string.IsNullOrEmpty(packageName) ? "" : $" {packageName}";
             return $"shell ovrgpuprofiler -e{armTarget}";
         }
 
-        /// <summary>Builds the adb shell command that asks whether detailed profiling is on.</summary>
-        /// <remarks>Split out from <see cref="ArmGpuProfiler"/> so the exact command is testable.</remarks>
         internal static string BuildGpuProfilerStatusCommand()
         {
             return "shell ovrgpuprofiler -i";
         }
 
-        /// <summary>True when <c>ovrgpuprofiler -i</c> reported detailed profiling already off.</summary>
-        /// <remarks>
-        /// Measured output is <c>"Detailed GPU profiling is disabled"</c> or
-        /// <c>"Detailed GPU profiling is enabled."</c> -- note the disabled form carries no full
-        /// stop, so neither a trailing-period nor an exact-string match is safe. Matching on
-        /// <c>"is disabled"</c> keeps the two apart without depending on that difference.
-        ///
-        /// Deliberately an affirmative test rather than the negation of "enabled". A query that
-        /// timed out, lost the device, or ran against a build with no <c>ovrgpuprofiler</c> returns
-        /// nothing at all, and "said nothing" is not "said disabled": reading it as disabled records
-        /// a running app as un-instrumented and tells the user to relaunch for no reason.
-        ///
-        /// This is only used to decide whether an app that is already running could have picked up
-        /// instrumentation; it is not a gate on the capture, because a capture with no GPU data is
-        /// still worth taking for its CPU metrics.
-        /// </remarks>
+        // Missing output is inconclusive, not evidence that profiling was disabled.
         internal static bool DetailedProfilingIsDisabled(string statusOutput)
         {
             return !string.IsNullOrEmpty(statusOutput) && statusOutput.Contains("is disabled");
@@ -759,7 +724,7 @@ duration_ms: 3000
 
         /// <summary>
         /// Put the GPU driver in detailed profiling mode, starting the profiling service if it is
-        /// not already up. Must run before any capture that reads render stages, and before the app
+        /// not already up. Must run before any capture that reads GPU data, and before the app
         /// being analysed is launched.
         /// </summary>
         /// <remarks>
@@ -782,9 +747,6 @@ duration_ms: 3000
         /// </remarks>
         private static bool ArmGpuProfiler(string packageName)
         {
-            // adbTool is cleared by IsADBReady() when the server fails to start, and
-            // connectedDevices is empty with no device attached. Arming is best-effort: skipping it
-            // leaves the capture to behave exactly as it would have anyway.
             if (adbTool == null || !adbTool.isReady || connectedDevices.Count == 0)
             {
                 return false;
@@ -792,13 +754,6 @@ duration_ms: 3000
 
             string outputString;
             string errorString;
-
-            // Only an answer that arrived and said "disabled" counts. Measured on a Quest 3 (HzOS
-            // 52648620000000521): both real states exit 0 -- "Detailed GPU profiling is disabled"
-            // and "Detailed GPU profiling is enabled." -- while a missing binary exits 127 and
-            // prints nothing. So the exit code screens out transport and tooling failures, and the
-            // predicate screens out an answer that parses as neither; treating either as "disabled"
-            // would tell the user to relaunch an app that is in fact instrumented.
             int statusCode = adbTool.RunCommand(
                 new string[] { "-s", connectedDevices[0], BuildGpuProfilerStatusCommand() },
                 PerfettoCapture, out outputString, out errorString, null, kGpuProfilerCommandTimeoutMs);
@@ -811,11 +766,11 @@ duration_ms: 3000
                 new string[] { "-s", connectedDevices[0], BuildGpuProfilerArmCommand(packageName) },
                 PerfettoCapture, out outputString, out errorString, null, kGpuProfilerCommandTimeoutMs);
 
-            RO.Util.DebugLog("adb ovrgpuprofiler : " + outputString);
-            RO.Util.DebugLog("adb ovrgpuprofiler : " + errorString);
             if (code != 0)
             {
-                RO.Util.DebugLogError("adb ovrgpuprofiler failed: " + code.ToString());
+                RO.Util.DebugLogError(
+                    $"GPU profiler arm failed with exit {code}. " +
+                    $"stdout: {outputString}; stderr: {errorString}");
                 return false;
             }
 
@@ -842,20 +797,6 @@ duration_ms: 3000
             return false;
         }
 
-        /// <summary>
-        /// Block until init reports the GPU profiling service running, so a capture never starts
-        /// against a service that has not finished coming up.
-        /// </summary>
-        /// <remarks>
-        /// Arming and the capture are two separate adb round trips, so nothing otherwise orders the
-        /// service being up against the capture starting. Measured on a Quest 3S the service was
-        /// always already running by the time `ovrgpuprofiler -e` returned, making this loop a
-        /// single confirming getprop in the normal case, but a capture that loses this race yields
-        /// a silent `GPU: 0.00ms` rather than an error, which is far worse than waiting.
-        ///
-        /// Only the capture path waits. <see cref="Init"/> arms from an editor GUI handler, where
-        /// blocking the main thread for the readiness budget would wedge the editor.
-        /// </remarks>
         private static void WaitForGpuProfilingService()
         {
             string outputString = null;
@@ -864,16 +805,12 @@ duration_ms: 3000
 
             while (true)
             {
-                // The device can go away mid-wait; without this the poll would NRE or index past
-                // the end of connectedDevices rather than reporting the missing GPU data.
                 if (adbTool == null || !adbTool.isReady || connectedDevices.Count == 0)
                 {
                     return;
                 }
 
-                // Bound the call by what is left of the readiness budget, otherwise one hung adb
-                // round trip runs to kGpuProfilerCommandTimeoutMs and the 5s bound means nothing.
-                // Checked before issuing, so the budget is never overrun by a whole extra poll.
+                // Bound each adb call by the remaining readiness budget.
                 int remainingMs = (int)(deadline - DateTime.UtcNow).TotalMilliseconds;
                 if (remainingMs <= 0)
                 {
@@ -885,7 +822,6 @@ duration_ms: 3000
                     new string[] { "-s", connectedDevices[0], "shell getprop init.svc.gpuprofserver" },
                     PerfettoCapture, out outputString, out errorString, null,
                     Math.Min(kGpuProfilerCommandTimeoutMs, remainingMs));
-
                 if (code != 0)
                 {
                     RO.Util.DebugLogError(
@@ -894,16 +830,11 @@ duration_ms: 3000
                     return;
                 }
 
-                // getprop exits 0 with nothing to say when the property does not exist, which is
-                // what a build that does not run this service under init looks like. Waiting the
-                // whole budget on every capture would not make it appear.
                 if (string.IsNullOrWhiteSpace(outputString))
                 {
                     return;
                 }
 
-                // init reports "restarting" while the service is coming back up, which contains
-                // "running" -- a substring test would call that ready and race the capture.
                 if (ServiceStateIsRunning(outputString))
                 {
                     return;
@@ -936,7 +867,7 @@ duration_ms: 3000
             return code == 0 && outputString != null ? outputString.Trim() : string.Empty;
         }
 
-        /// <summary>True when a capture taken now cannot contain render stages for the app.</summary>
+        /// <summary>True when a capture taken now cannot contain GPU data for the app.</summary>
         /// <remarks>
         /// Split out from <see cref="ReportIfAppPredatesGpuProfiler"/> so the rule is testable. It
         /// holds for as long as the un-instrumented process lives, not only for the capture that
@@ -948,10 +879,6 @@ duration_ms: 3000
             return appPid != -1 && appPid == unprofiledPid;
         }
 
-        /// <summary>
-        /// Say plainly that this capture will have no GPU data, rather than letting it surface as a
-        /// missing metric with no cause attached.
-        /// </summary>
         private static void ReportIfAppPredatesGpuProfiler()
         {
             if (!CaptureCannotHaveGpuData(unprofiledAppPid, lastKnownPID))
@@ -965,38 +892,27 @@ duration_ms: 3000
                 "so this capture will have no GPU or MSAA data. Relaunch the app to collect them.");
         }
 
-        /// <summary>
-        /// Runs a short render stage trace to completion so gpuprofserver starts streaming render
-        /// stages into perfetto. Must finish before the capture opens, and must never overlap it.
-        /// </summary>
+        /// <summary>Serialises the render stage trace against a capture.</summary>
         /// <remarks>
-        /// Arming with <c>ovrgpuprofiler -e</c> only puts the GPU driver into detailed mode; on its
-        /// own it does not make the service emit. <c>-t</c> is what starts the stream. While a
-        /// <c>-t</c> is running it consumes that stream exclusively and perfetto still records
-        /// nothing, so the ordering is the whole point: warm up, let it finish, then capture.
-        ///
-        /// Needed on Panther (Quest 3S, v207) even with the arm correctly ordered before app start,
-        /// which <see cref="ReportIfAppPredatesGpuProfiler"/> verifies and which alone is enough on
-        /// Phoenix. Measured on Panther with the capture config below, counting rows in
-        /// trace_processor's gpu_slice table: arm before launch and no warm up, 0; the same capture
-        /// with this call, 328k and 329k on back to back runs.
-        ///
-        /// Costs one <c>ovrgpuprofiler</c> round trip plus <see cref="kRenderStagePrimeSeconds"/>
-        /// on the capture thread, and puts the app briefly under the Adreno GPU profiler layer,
-        /// which is the layer that kills it in roughly one capture in eight (T247804164). That
-        /// crash predates this call and happens during the capture regardless; what changes is that
-        /// the app is now exposed for a second longer. A capture whose app dies is caught by
-        /// <see cref="IsPackageForeground"/> and abandoned rather than filed as a bogus card.
-        /// </remarks>
-        /// <summary>Serialises render stage traces against each other and against a capture.</summary>
-        /// <remarks>
-        /// A running <c>-t</c> consumes the render stage stream exclusively: one spanning a capture
-        /// leaves the trace with zero GPU slices, and a second <c>-t</c> started while one is in
-        /// flight fails outright with "Failed to start render stage tracing". Both call sites take
-        /// this, so priming can be issued freely without either hazard.
+        /// A running <c>-t</c> takes the GPU profiling stream: one spanning a capture leaves the
+        /// trace with zero GPU slices, and a second <c>-t</c> started while one is in flight fails
+        /// outright with "Failed to start render stage tracing".
         /// </remarks>
         private static readonly object renderStagePrimeLock = new object();
 
+        /// <summary>
+        /// Runs a short render stage trace to completion so the app's own GPU profiling, which What
+        /// If depends on, starts working. Must never overlap a capture.
+        /// </summary>
+        /// <remarks>
+        /// Arming with <c>ovrgpuprofiler -e</c> only puts the GPU driver into detailed mode; the
+        /// runtime's <c>StartGpuProfiling</c> still fails until a <c>-t</c> has run. Captures need a
+        /// GPU session to have run only after the app stops a trace of its own, and get one from
+        /// <see cref="FlushGpuStreamAfterAppTrace"/>.
+        ///
+        /// Every GPU session risks the Adreno GPU profiler layer crashing the app as the session
+        /// starts (T291081389), so this runs once per launch and from nowhere else.
+        /// </remarks>
         internal static void PrimeRenderStageStream()
         {
             lock (renderStagePrimeLock)
@@ -1012,6 +928,9 @@ duration_ms: 3000
                 return;
             }
 
+            // The relaunched app holds no trace, and this run is a GPU session in its own right.
+            appGpuTraceMayBeReleased = false;
+
             string outputString;
             string errorString;
 
@@ -1023,21 +942,78 @@ duration_ms: 3000
 
             RO.Util.DebugLog("adb ovrgpuprofiler -t : " + outputString);
 
-            // The tool reports both of these on stdout and still exits 0. Each one means the
-            // capture that follows will have no GPU data, so neither is worth swallowing.
+            string combinedOutput = (outputString ?? string.Empty) + "\n" +
+                (errorString ?? string.Empty);
+            bool reportedStartFailure = combinedOutput.Contains("Failed to start render stage tracing");
+
+            // The tool reports both of these and still exits 0, so neither is worth swallowing.
             if (code != 0 ||
                 string.IsNullOrEmpty(outputString) ||
                 outputString.Contains("No render stage data") ||
-                outputString.Contains("Failed to start render stage tracing"))
+                reportedStartFailure)
             {
-                // A warning, not an error: the capture still runs and its CPU metrics are still
-                // worth having. The common cause is benign -- a prime issued while another one is
-                // in flight, or before the app has started rendering -- and the message only has
-                // to be visible enough to explain a later GPU: 0.00ms.
+                // A warning, not an error: Bottleneck Analysis is unaffected, and the common cause
+                // is benign -- the app has not started rendering yet -- so the message only has to
+                // be visible enough to explain an empty What If.
                 RO.Util.DebugLogWarning(
-                    "Could not start the render stage stream (exit " + code + "); this capture will " +
-                    "likely report 0.00ms GPU time. " + outputString + " " + errorString);
+                    "Could not run the render stage trace What If analysis needs (exit " + code + "); " +
+                    "What If may return no results until the app is relaunched. " + outputString + " " +
+                    errorString);
             }
+        }
+
+        /// <summary>Call before asking the app for a quick perf.</summary>
+        internal static void NoteQuickPerfRequested(bool frozen)
+        {
+            if (!frozen || appGpuTimeCachedPid == -1 || appGpuTimeCachedPid != lastKnownPID)
+            {
+                appGpuTraceMayBeReleased = true;
+            }
+        }
+
+        internal static void NoteQuickPerfReceived(float gpuFrameTime)
+        {
+            if (gpuFrameTime > 0.0f)
+            {
+                appGpuTimeCachedPid = lastKnownPID;
+            }
+        }
+
+        /// <summary>Call before starting What If, which traces render stages in the app.</summary>
+        internal static void NoteAppGpuTraceStarted()
+        {
+            appGpuTraceMayBeReleased = true;
+        }
+
+        /// <summary>
+        /// Runs a throwaway GPU session so the capture after it gets GPU data. Call with
+        /// <see cref="renderStagePrimeLock"/> held.
+        /// </summary>
+        /// <remarks>
+        /// When the app stops a render stage trace of its own, which it does when a capture starts
+        /// and on unfreeze, the next GPU session on the device gets no GPU slices or surface
+        /// workloads at all, however long it runs; the one after it is complete. Re-arming with
+        /// <c>-e</c> or a session with only the profiling service enabled does not clear it.
+        /// </remarks>
+        private static void FlushGpuStreamAfterAppTrace()
+        {
+            if (!appGpuTraceMayBeReleased)
+            {
+                return;
+            }
+            appGpuTraceMayBeReleased = false;
+
+            string outputString;
+            string errorString;
+            int code = adbTool.RunCommand(
+                new string[] { "-s", connectedDevices[0], "shell perfetto -c - --txt -o " + gpuStreamFlushOutFile },
+                PerfettoCapture, out outputString, out errorString, GpuStreamFlushConfig,
+                kGpuProfilerCommandTimeoutMs);
+            RO.Util.DebugLog("adb perfetto GPU stream flush: exit " + code + " " + outputString + " " + errorString);
+
+            adbTool.RunCommand(
+                new string[] { "-s", connectedDevices[0], "shell rm -f " + gpuStreamFlushOutFile },
+                PerfettoCapture, out outputString, out errorString);
         }
 
         private static void ReportGpuServiceNotReady(string lastState)
@@ -1052,21 +1028,21 @@ duration_ms: 3000
         {
             ClearPerfettoCapture();
 
-            // Only the full capture reads render stages; the low-overhead config has none. Init
-            // arms the profiler too, but it can be skipped there, and this is the call site that
-            // actually depends on it.
+            // Only the full capture reads GPU data; the low-overhead config has none. Init arms the
+            // profiler too, but it can be skipped there, and this is the call site that actually
+            // depends on it.
             if (!lowOverhead && ArmGpuProfiler(packageName))
             {
                 WaitForGpuProfilingService();
                 ReportIfAppPredatesGpuProfiler();
-                PrimeRenderStageStream();
             }
 
-            // Held across the capture as well as the prime: a render stage trace started by
-            // another path while perfetto is recording would take the stream and leave this
-            // trace with no GPU slices at all.
             lock (renderStagePrimeLock)
             {
+                if (!lowOverhead)
+                {
+                    FlushGpuStreamAfterAppTrace();
+                }
                 RunPerfettoCapture(lowOverhead, packageName);
             }
         }
@@ -1082,8 +1058,12 @@ duration_ms: 3000
             RO.Util.DebugLog("core sdk version 70+");
 
             int code2 = adbTool.RunCommand(new string[] { "-s", connectedDevices[0], commandCapture }, PerfettoCapture, out outputString, out errorString, lowOverhead ? lowOverheadConfig : finalConfig);
-            RO.Util.DebugLog("adb Perfetto device: " + code2.ToString());
-            RO.Util.DebugLog("adb Perfetto device: " + outputString + " error: " + errorString);
+            if (code2 != 0)
+            {
+                RO.Util.DebugLogError(
+                    $"Perfetto capture command returned exit {code2}. " +
+                    $"stdout: {outputString}; stderr: {errorString}");
+            }
 
         }
 
@@ -1110,14 +1090,8 @@ duration_ms: 3000
             string error;
             output = string.Empty;
 
-            // Deliberately silent on the success path: polling callers such as IsDeviceAsleep run
-            // this from Update(), so logging each command, each argument and each result floods the
-            // console several lines per editor tick and buries real warnings. Failures below carry
-            // the command with them, so nothing diagnostic is lost.
             string commandStr = string.Join(" ", command);
 
-            // adbTool is cleared by IsADBReady() whenever the server fails to start, so it can be
-            // null here even though the field has an initializer.
             if (adbTool == null || !adbTool.isReady)
             {
                 RO.Util.DebugLogError($"[ADB] OVRADBTool not ready, skipping: adb {commandStr}");
@@ -1165,7 +1139,6 @@ duration_ms: 3000
                 {
                     File.Copy(tempFile, finalPath, true);
                     File.Delete(tempFile);
-                    RO.Util.DebugLog($"Perfetto trace pulled to: {finalPath}");
                 }
                 catch (System.Exception ex)
                 {
@@ -1178,11 +1151,7 @@ duration_ms: 3000
             }
         }
 
-        /// <summary>Is the analysed app the activity the device is currently showing?</summary>
-        /// <remarks>
-        /// Returns true when the answer cannot be determined, so an adb hiccup degrades to the
-        /// previous behaviour rather than failing captures that would have been fine.
-        /// </remarks>
+        // Fail open when foreground state cannot be determined.
         static private bool IsPackageForeground(string packageName)
         {
             if (adbTool == null || !adbTool.isReady || string.IsNullOrEmpty(packageName))
@@ -1194,9 +1163,6 @@ duration_ms: 3000
             string errorString = null;
             int code;
 
-            // The whole point of this helper is to fail open, so the adb calls are wrapped: an
-            // exception escaping here would leave the capture thread's lambda without running
-            // onFinishedScreenshot, which is worse than letting a doomed capture through.
             try
             {
                 List<string> devices = adbTool.GetDevices();
@@ -1225,9 +1191,112 @@ duration_ms: 3000
                 return true;
             }
 
-            // dumpsys prints the component as `package/.Activity`, so anchoring on the separator
-            // keeps `com.acme.game` from matching a resumed `com.acme.game.launcher`.
+            // Anchor on the component separator to avoid matching a package-name prefix.
             return outputString.Contains(packageName + "/");
+        }
+
+        private const string kGpuProfilerLayerLibrary = "libVkLayer_ADRENO_qprofiler.so";
+
+        internal enum AppCrashKind
+        {
+            None,
+            GpuProfilerLayer,
+            Other,
+        }
+
+        /// <summary>Classifies the native crash, if any, that a crash log buffer records for the app.</summary>
+        /// <remarks>
+        /// crash_dump logs the crashing thread's backtrace under a
+        /// <c>pid: N, tid: M, name: T  &gt;&gt;&gt; package &lt;&lt;&lt;</c> header, and the frames
+        /// themselves carry crash_dump's pid, so they can only be tied to the app through that
+        /// header. A frame in the Adreno profiler layer is the driver crash a GPU profiling session
+        /// can set off when it starts against a running app; it kills the app, and the Editor only
+        /// sees the connection drop.
+        /// </remarks>
+        internal static AppCrashKind ClassifyAppCrash(string crashLog, int appPid)
+        {
+            if (string.IsNullOrEmpty(crashLog) || appPid <= 0)
+            {
+                return AppCrashKind.None;
+            }
+
+            string backtraceHeader = "pid: " + appPid + ", tid: ";
+            string fatalSignal = "pid " + appPid + " (";
+            var kind = AppCrashKind.None;
+            bool inAppBacktrace = false;
+
+            foreach (var line in crashLog.Split('\n'))
+            {
+                if (line.Contains("*** *** ***"))
+                {
+                    inAppBacktrace = false;
+                }
+                else if (line.Contains(", tid: ") && line.Contains(">>> "))
+                {
+                    inAppBacktrace = line.Contains(backtraceHeader);
+                    if (inAppBacktrace)
+                    {
+                        kind = AppCrashKind.Other;
+                    }
+                }
+                else if (inAppBacktrace && line.Contains(kGpuProfilerLayerLibrary))
+                {
+                    return AppCrashKind.GpuProfilerLayer;
+                }
+                else if (line.Contains("Fatal signal") && line.Contains(fatalSignal))
+                {
+                    kind = AppCrashKind.Other;
+                }
+            }
+
+            return kind;
+        }
+
+        private static AppCrashKind ReadAppCrashKind(int appPid)
+        {
+            if (adbTool == null || !adbTool.isReady || connectedDevices.Count == 0 || appPid <= 0)
+            {
+                return AppCrashKind.None;
+            }
+
+            string outputString;
+            string errorString;
+            try
+            {
+                int code = adbTool.RunCommand(
+                    new string[] { "-s", connectedDevices[0], "logcat -d -b crash" },
+                    PerfettoCapture, out outputString, out errorString, null, kAdbCommandTimeoutMs);
+                return code == 0 ? ClassifyAppCrash(outputString, appPid) : AppCrashKind.None;
+            }
+            catch (System.Exception ex)
+            {
+                RO.Util.DebugLog("Could not read the device crash log: " + ex.Message);
+                return AppCrashKind.None;
+            }
+        }
+
+        private static void ReportCaptureAppNotForeground(string packageName, int appPid)
+        {
+            switch (ReadAppCrashKind(appPid))
+            {
+                case AppCrashKind.GpuProfilerLayer:
+                    RO.Util.DebugLogError(
+                        "Aborting capture: " + packageName + " (pid " + appPid + ") was killed by a " +
+                        "crash in the headset's GPU profiler layer (" + kGpuProfilerLayerLibrary + ") " +
+                        "when the capture started GPU profiling. This is a known GPU driver issue, " +
+                        "not a bug in your app. Relaunch the app and capture again.");
+                    break;
+                case AppCrashKind.Other:
+                    RO.Util.DebugLogError(
+                        "Aborting capture: " + packageName + " (pid " + appPid + ") crashed during the " +
+                        "capture. Its backtrace is in the device crash log (adb logcat -b crash).");
+                    break;
+                default:
+                    RO.Util.DebugLogError(
+                        "Aborting capture: " + packageName + " is not the foreground app, so the " +
+                        "screenshot and trace would not be of the app being analysed");
+                    break;
+            }
         }
 
         static private void IssueScreenShotCapture(string outName)
@@ -1398,6 +1467,8 @@ duration_ms: 3000
 
             captureThread = new Thread(() =>
             {
+                // The main thread re-resolves the PID once a dead app cancels the capture.
+                int appPid = lastKnownPID;
                 if (onFirstExecute != null)
                 {
                     onFirstExecute();
@@ -1414,9 +1485,6 @@ duration_ms: 3000
                     return;
                 }
 
-                // Check if device went to sleep during Perfetto capture (T241267036)
-                // If asleep, skip pull and screenshot to avoid capturing blank frames
-                // Single check covers both pull and screenshot to avoid redundant ADB calls
                 bool deviceAsleep = IsDeviceAsleep();
                 if (deviceAsleep)
                 {
@@ -1428,14 +1496,9 @@ duration_ms: 3000
                     return;
                 }
 
-                // Same reasoning as the sleep check: a capture of the wrong thing is worse than
-                // no capture. screencap follows the display, so if the app is not on screen the
-                // thumbnail and the trace describe the Home environment, not the app.
                 if (!IsPackageForeground(packageName))
                 {
-                    RO.Util.DebugLogError(
-                        "Aborting capture: " + packageName + " is not the foreground app, so the " +
-                        "screenshot and trace would not be of the app being analysed");
+                    ReportCaptureAppNotForeground(packageName, appPid);
                     if (onFinishedScreenshot != null)
                     {
                         onFinishedScreenshot();

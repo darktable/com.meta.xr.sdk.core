@@ -1,6 +1,6 @@
 ---
 name: hz-meta-xr-operator-coordinates
-description: Converts between Unity, OpenXR, and tracking-origin coordinates so AI agents can position the head and controllers correctly in Meta Quest and Horizon OS apps, covering tracking origin matching, Unity-to-OpenXR conversion, controller positioning, and UI interaction via aim pose.
+description: Converts between Unity, OpenXR, and tracking-origin coordinates so AI agents can position the head and controllers correctly in Meta VR and Horizon OS apps, covering tracking origin matching, Unity-to-OpenXR conversion, controller positioning, and aiming a controller ray at UI elements.
 allowed-tools:
   - Bash(metavr:*)
   - Bash(hzdb:*)
@@ -71,41 +71,38 @@ Use `tracking_origin.OpenXR` as `base_space`. Aim **directions** (`target_world 
 
 ## Grip vs Aim Pose
 
-- **Grip pose** (`pose_type: grip`, default) — where the hand holds the controller. Use for positioning and grabbing.
-- **Aim pose** (`pose_type: aim`) — pointing direction. Use for shooting, pointing, and UI interaction.
-- **Typical workflow**: position with grip → grab → switch to aim pose for orientation control.
-- **Grip-to-aim pitch offset is ~60°** on Quest controllers. To aim horizontally with grip pose, tilt grip up ~60°. Prefer using aim pose directly to avoid this complexity.
+- **Grip pose** (`pose_type: grip`, default) — where the hand holds the controller. **This drives the UI ray** in Meta interaction stacks (see below), and is also used for positioning/grabbing.
+- **Aim pose** (`pose_type: aim`) — the OpenXR pointer pose. While most Meta OVR ray components do not use this, other apps could, so make sure to set both grip and aim.
 
-## Interacting with UI Elements
+## Aiming a Controller Ray at UI Elements
 
-**Pick the path by interaction stack:** Core SDK apps (`OVRRaycaster`/`OVRInputModule`) → use **Core SDK UI Ray (OVRRaycaster)** below (grip-based; the aim pose is ignored). All other stacks (Unity XR Interaction Toolkit, Meta Interaction SDK) → use the aim-pose steps here.
+**One method for every stack.** The UI ray is cast from a **controller-attached transform**, not the OpenXR aim pose — so **drive the grip** and run a short measure-and-correct loop that absorbs the (stack-specific, unknown) grip→ray offset. Same for Core SDK, ISDK, and XRI; only the transform path differs:
 
-Use the aim pose to point at and click UI elements. Position the controller **within 1 unit of the UI target** (if possible) for realistic interaction.
+| Stack | Ray-origin transform (its forward *is* the ray) | Reticle (live hit point) |
+|---|---|---|
+| Core SDK (`OVRRaycaster`/`OVRInputModule`) | `OVRCameraRig/TrackingSpace/RightHandAnchor/RightControllerAnchor/OVRControllerPrefab` | `…/OVRControllerPrefab/OVRRayHelper/Cursor` |
+| Meta Interaction SDK (ISDK) | `…/ControllerRayInteractor/ControllerPointerPose` (`RayInteractor._rayOrigin`) | `…/ControllerRayInteractor/Visuals/RaycasterCursorVisual` |
+| Unity XRI | the XR Ray Interactor transform | its reticle (may also honor the aim pose) |
 
-1. **Discover UI**: `unity_find_canvases()` → `unity_find_interactables("CanvasPath")`
-2. **Get target pose**: `unity_get_world_pose("Canvas/Panel/Button")` → note `tracking_origin.OpenXR`
-3. **Face the target** — turn head toward the UI element first
-4. **Requery positions** after head movement
-5. **Position controller** ~0.5–0.7m from the element along the line from the eye:
-   ```
-   target_openxr = convert(target_unity - eye_unity)
-   controller_pos = target_openxr - 0.7 * normalize(target_openxr)
-   direction = target_openxr - controller_pos
-   orientation = math_build_quat(direction)
-   ```
-6. **Set aim pose**: `openxr_set_controller_pose(hand: right, pose_type: aim, position, orientation, base_space: tracking_origin.OpenXR)`
-7. **Click**: `openxr_set_controller_input(Trigger, 1)` then `(Trigger, 0)`
-8. **Verify**: `openxr_capture_composited_image()`
+(Left hand: swap `Right`→`Left` / `…InteractorsRight`→`…InteractorsLeft`.)
 
-## Core SDK UI Ray (OVRRaycaster)
+**Steps** — use `tracking_origin.OpenXR` as `base_space` throughout; converges in 1–2 passes:
 
-Apps that are using Core-SDK based aiming (such as `OVRRaycaster`/`OVRInputModule`) casts the ray from the controller model's pointer (the `OVRControllerPrefab` transform), which sits a **fixed 60° below** grip-forward and **ignores the OpenXR aim pose**. So drive the **grip**, not aim: set `grip_forward` to the grip→target direction pitched **up 60°** (`h = hypot(D.x, D.z)`; `p = atan2(D.y, h) + 60°`; `grip_forward = [D.x/h*cos(p), sin(p), D.z/h*cos(p)]`), then `math_build_quat(grip_forward)` and `openxr_set_controller_pose(pose_type: grip)`. Validate before clicking: read `OVRCameraRig/…/RightControllerAnchor/OVRControllerPrefab`'s world pose — its `forward` **is** the ray — and intersect it with the UI panel plane; for closely-spaced targets recompute with that prefab position as the origin (~5 cm off the grip) for sub-cm accuracy.
+**First placement:** if the controller was never placed (inactive/untracked), first set a rough controller pose in front of the head — there is no measurable ray until you do. Use the euler-forward form for that pass (the reticle is off-surface); the first correction may be large since the grip→ray offset is still unknown.
+
+1. **Target**: `unity_find_canvases` → `unity_find_interactables` → `unity_get_world_pose` the element.
+2. **Read the ray-origin transform** → origin `O` + forward `Rdir`. From its Unity euler (roll-independent): `Rdir = (sin(yaw)·cos(pitch), −sin(pitch), cos(yaw)·cos(pitch))` — or, once the ray is on a surface, `Rdir = normalize(reticle − O)`.
+3. **Solve** in OpenXR (negate Z on all positions/directions): `D = normalize(convertZ(target) − convertZ(O))`; `ΔR = fromToRotation(convertZ(Rdir) → D)` = `[axis·sin(θ/2), cos(θ/2)]`, `axis = normalize(Rdir_xr × D)`, `θ = acos(Rdir_xr · D)`.
+4. **Rotate the grip**: `newGrip = math_multiply_quat(ΔR, currentGrip)`, then set it (`pose_type: grip`). **Premultiply the full quaternion — do NOT rebuild the grip from a forward vector (loses roll, breaks the offset).** Optionally set `pose_type: aim` to `math_build_quat(D)` for XRI.
+5. **Refine**: rotating the grip also shifts `O`, so re-read the transform and repeat 2–4 until the reticle is on target (often one-shot at range).
+6. **Click**: verify `reticle ≈ target` (the reticle is valid only while on a surface — its cursor deactivates off-surface), then pull the **Trigger** across frames for standard "click" interactions. Note that other interactions may require different kinds of input (i.e. dragging a slider).
 
 ## Tips
 
 - **Smooth movement**: `duration_seconds: 1` for rotations, `1.5-2` for position+rotation, `0` for instant.
 - **Never guess positions**: always use `unity_get_world_pose` for both target and eye.
 - **Hold inputs across frames** — setting an input to 1 and immediately to 0 may be missed by `Update()`.
+- **Confirm the math visually** — after a head move or controller placement on hardware runs, pull `metavr capture screenshot` to confirm the computed pose matches what's rendered.
 
 ## Common Pitfalls
 

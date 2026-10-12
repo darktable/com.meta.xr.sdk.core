@@ -498,6 +498,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 {
                     quickPerfData.cpuFrameTime = quickPerfData.cpuFrameTime * (1.0f - kQuickPerfTolerenceCPUPercentage);
                     quickPerfData.gpuFrameTime = quickPerfData.gpuFrameTime * (1.0f - kQuickPerfTolerenceGPUPercentage);
+                    CaptureTool.NoteQuickPerfReceived(quickPerfData.gpuFrameTime);
 
                     if (IsEmptyFrame(quickPerfData))
                     {
@@ -608,6 +609,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 captureStartTime = DateTime.Now;
                 needRepait = true;
 
+                CaptureTool.NoteQuickPerfRequested(runtimeIsFrozen);
                 SendToServer("requestQuickPerf");
 
                 // Log quick perf request with context
@@ -649,6 +651,7 @@ namespace Meta.XR.RuntimeOptimizer.Editor
                 isActivelyCapturing = true;
                 captureStartTime = DateTime.Now;
 
+                CaptureTool.NoteQuickPerfRequested(runtimeIsFrozen);
                 SendToServer("requestQuickPerf");
 
                 RO.Util.DebugLog("Quick perf data requested for staging area");

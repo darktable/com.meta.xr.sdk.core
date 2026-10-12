@@ -1,6 +1,6 @@
 ---
 name: hz-meta-xr-operator-grabbed-objects
-description: Aims and positions objects held by simulated controllers or hands in Meta Quest and Horizon OS XR apps, including pose-offset calibration and quaternion math for grip and aim poses.
+description: Aims and positions objects held by simulated controllers or hands in Meta VR and Horizon OS XR apps, including pose-offset calibration and quaternion math for grip and aim poses.
 allowed-tools:
   - Bash(metavr:*)
   - Bash(hzdb:*)
@@ -97,3 +97,4 @@ To position AND orient in one call, combine with the aim quaternion from Step 3.
 4. **Mixing pose types** — calibrate and aim with the same pose type (both aim or both grip).
 5. **Forgetting the inverse** — `Q_aim = Q_desired * Q_offset_inv`, not `Q_desired * Q_offset`.
 6. **Aiming from object origin instead of fire point** — use the actual muzzle/fire point child, not the object's transform origin.
+7. **Trusting the aim math without looking** — after aiming, confirm the muzzle line visually (`metavr capture screenshot` on hardware runs) before asserting the shot.

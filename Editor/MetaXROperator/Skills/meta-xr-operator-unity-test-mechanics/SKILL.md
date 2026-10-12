@@ -1,6 +1,6 @@
 ---
 name: hz-meta-xr-operator-unity-test-mechanics
-description: Runs AI-driven test attempts in Unity Meta Quest and Horizon OS projects using a bounded 3-attempt retry policy with an explicit understand → set up → execute → evaluate → report flow.
+description: Runs AI-driven test attempts in Unity Meta VR and Horizon OS projects using a bounded 3-attempt retry policy with an explicit understand → set up → execute → evaluate → report flow.
 allowed-tools:
   - Bash(metavr:*)
   - Bash(hzdb:*)
@@ -24,7 +24,7 @@ Do NOT spend excessive time iterating on a behavior that may be broken. Your goa
 
 1. **Understand**: Identify the behavior to test, expected outcome, and how to trigger it. Clarify with the user if needed.
 2. **Set up**: Verify preconditions (correct scene, editor state, required objects/scripts present). Capture baseline state (i.e. with a screenshot) if useful.
-3. **Execute**: Enter Unity play mode (if in editor), then trigger the necessary behavior and actions to test behaviors. Observe via screenshots, console output, object state (inspect GameObjects, components, transforms), and OpenXR tools (controller poses, inputs).
+3. **Execute**: Enter Unity play mode (if in editor), then trigger the necessary behavior and actions to test behaviors. Observe via screenshots, console output, object state (inspect GameObjects, components, transforms), and OpenXR tools (controller poses, inputs). When the app runs on a headset instead of the Editor, pull the same evidence host-side with `metavr log` and `metavr capture screenshot`.
 4. **Evaluate**: Compare observed result to expected outcome. On pass, report with evidence. On fail, retry or conclude per the policy above.
 5. **Report** (pass or fail): What you tested, what you expected, what happened, any console errors, and your assessment of why (if failing).
 

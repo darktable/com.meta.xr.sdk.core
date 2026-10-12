@@ -58,8 +58,18 @@ namespace Meta.XR.Editor
             GeminiCliService.ServiceId => "gemini-cli",
             CodexService.ServiceId => "codex",
             OpenCodeService.ServiceId => "open-code",
+            MuseCodeService.ServiceId => "muse-code",
             _ => null,
         };
+
+        /// <summary>
+        /// True when the service registers through metavr's federated server on BOTH transports.
+        /// Muse Code has no <c>mcp add</c> CLI, so the Direct SSE server can never be registered
+        /// for it; the panel transparently registers the MCP Proxy instead. Registration,
+        /// verification and the displayed command all read this so they cannot disagree.
+        /// </summary>
+        internal static bool AlwaysRegistersViaProxy(string serviceId) =>
+            serviceId == MuseCodeService.ServiceId;
 
         // claude-code needs --execute to actually run `claude mcp add ...`; it is print-only
         // otherwise. The file-based agents (gemini-cli/codex/open-code) write their config

@@ -8,7 +8,7 @@ allowed-tools:
 
 # Meta XR Operator Interaction Poke
 
-How to poke Meta XR Interaction SDK pokeables. See **meta-xr-operator-interaction-grab** for grab interactions, **meta-xr-operator-coordinates** for coordinate conversion.
+How to poke Meta XR Interaction SDK pokeables. See **hz-meta-xr-operator-interaction-grab** for grab interactions, **hz-meta-xr-operator-coordinates** for coordinate conversion.
 
 ## Step 1 — Identify the pokeable type
 
@@ -76,7 +76,7 @@ Material-only pokeables have no transform feedback — only a material parameter
 
 1. **Pick a side button, never the middle one.** When several pokeables sit side-by-side, the middle one frequently renders with a baseline rendering offset (z-fighting, staggered z-offsets, ghost states). Testing the middle button means your "did it change?" comparison fights an existing asymmetry. A side button gives you two clean unlit neighbors as in-frame baselines.
 2. **Lock head pose close.** Head along -n at ~30–60 cm so each button fills a meaningful portion of the frame. Standing-eye distance hides glow deltas in pixel noise. Offset slightly off-axis (or use a top-down angle for face-up panels) so the controller body doesn't sit between camera and target.
-3. **Capture a same-pose baseline before you touch anything.** Both controllers off-camera. Then move controller into test pose and re-screenshot at the *same* head pose. Compare same-button before/after AND target vs. neighbors in the same frame.
+3. **Capture a same-pose baseline before you touch anything.** Both controllers off-camera. Then move controller into test pose and re-screenshot at the *same* head pose. Compare same-button before/after AND target vs. neighbors in the same frame. On hardware runs, take these captures host-side with `metavr capture screenshot` so the baseline/comparison pair is preserved outside the session.
 
 If you find yourself hedging with phrases like "subtle but visible" — stop. Reset to a side button at close range and try again. Ambiguity is a redesign signal, not a result.
 

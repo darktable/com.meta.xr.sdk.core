@@ -118,7 +118,8 @@ namespace Meta.XR.Editor
             // The two transports register DIFFERENT server names: McpProxy federates XR Operator's
             // tools into metavr's own server (registered as "metavr"), while DirectSSE still
             // registers "meta-xr-operator". Matching the wrong one silently fails verification.
-            var federated = SelectedTransport == TransportMode.McpProxy;
+            var federated = SelectedTransport == TransportMode.McpProxy
+                || MetaVrCliXrOperator.AlwaysRegistersViaProxy(serviceId);
             var serverName = federated ? MetaVrCliXrOperator.MetavrServerName : OperatorMcpName;
 
             // OpenCode has no `mcp list` CLI, and spawning `opencode` with unknown args launches
@@ -128,14 +129,31 @@ namespace Meta.XR.Editor
             if (serviceId == OpenCodeService.ServiceId)
                 return federated && OpenCodeConfigHasServer(projectRoot, serverName);
 
-            // Gemini's `mcp list` is unreliable to parse
-            // so read its settings.json directly when present; if no settings file exists, fall
-            // through to `mcp list`. Every other CLI uses `mcp list`, which runs in Unity's
-            // environment (the same one the panel registered from) and so authoritatively reflects
-            // the config actually in use, honoring CODEX_HOME / CLAUDE_CONFIG_DIR, etc.
+            // Muse Code: no usable `mcp list` CLI, and spawning `muse` may launch its TUI. metavr
+            // writes ~/.config/muse/settings.json itself on the federated path, so read it back.
+            if (serviceId == MuseCodeService.ServiceId)
+                return federated && (MuseConfigHasServer(serverName) ?? false);
+
+            // Read each agent's config file directly instead of spawning a slow `mcp list`; the
+            // paths/keys/scopes mirror what `metavr mcp install <agent>` writes. A null result
+            // means no known config file exists, so we fall through to `mcp list`.
             if (serviceId == GeminiCliService.ServiceId)
             {
                 var fromConfig = GeminiConfigHasServer(projectRoot, serverName);
+                if (fromConfig.HasValue)
+                    return fromConfig.Value;
+            }
+
+            if (serviceId == ClaudeCodeService.ServiceId)
+            {
+                var fromConfig = ClaudeConfigHasServer(projectRoot, serverName);
+                if (fromConfig.HasValue)
+                    return fromConfig.Value;
+            }
+
+            if (serviceId == CodexService.ServiceId)
+            {
+                var fromConfig = CodexConfigHasServer(serverName);
                 if (fromConfig.HasValue)
                     return fromConfig.Value;
             }
@@ -218,19 +236,193 @@ namespace Meta.XR.Editor
             GeminiSettingsContainServer(settingsJson, OperatorMcpName);
 
         /// <summary>True when a Gemini settings.json registers <paramref name="serverName"/>.</summary>
-        internal static bool GeminiSettingsContainServer(string settingsJson, string serverName)
+        internal static bool GeminiSettingsContainServer(string settingsJson, string serverName) =>
+            JsonMcpServersContain(settingsJson, serverName);
+
+        // --- Claude Code config-file check (faster than spawning `claude mcp list`) ---
+
+        // metavr registers Claude at local scope (~/.claude.json projects[cwd].mcpServers); user
+        // scope and .mcp.json are also checked. Null when no config file exists.
+        private static bool? ClaudeConfigHasServer(string projectRoot, string serverName)
         {
-            if (string.IsNullOrEmpty(settingsJson))
+            var claudeJson = ReadFileOrNull(GetClaudeConfigJsonPath());
+            var mcpJson = string.IsNullOrEmpty(projectRoot)
+                ? null
+                : ReadFileOrNull(Path.Combine(projectRoot, ".mcp.json"));
+
+            if (claudeJson == null && mcpJson == null)
+                return null;
+
+            return ClaudeJsonHasServer(claudeJson, projectRoot, serverName)
+                || JsonMcpServersContain(mcpJson, serverName);
+        }
+
+        // $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json.
+        private static string GetClaudeConfigJsonPath()
+        {
+            var configDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            var baseDir = string.IsNullOrEmpty(configDir)
+                ? AIToolsSetupModel.GetUserHome()
+                : configDir;
+            return Path.Combine(baseDir, ".claude.json");
+        }
+
+        /// <summary>
+        /// True when a .claude.json registers <paramref name="serverName"/> at user scope
+        /// (mcpServers) or local scope (projects[projectRoot].mcpServers). Project keys are
+        /// path-normalized: Claude stores them with forward slashes even on Windows.
+        /// </summary>
+        internal static bool ClaudeJsonHasServer(
+            string claudeJson, string projectRoot, string serverName)
+        {
+            if (string.IsNullOrEmpty(claudeJson))
                 return false;
             try
             {
-                return JsonObject.Parse(settingsJson)["mcpServers"]?[serverName] != null;
+                var root = JsonObject.Parse(claudeJson);
+                if (root["mcpServers"]?[serverName] != null)
+                    return true;
+
+                var projects = root["projects"] as JsonObject;
+                if (string.IsNullOrEmpty(projectRoot) || projects == null)
+                    return false;
+
+                foreach (var project in projects)
+                {
+                    if (PathsEqual(project.Key, projectRoot)
+                        && project.Value?["mcpServers"]?[serverName] != null)
+                        return true;
+                }
+                return false;
             }
             catch
             {
                 return false;
             }
         }
+
+        // --- Codex config-file check (faster than spawning `codex mcp list`) ---
+
+        // metavr writes ~/.codex/config.toml (honors CODEX_HOME); user scope only. Null when absent.
+        private static bool? CodexConfigHasServer(string serverName)
+        {
+            var content = ReadFileOrNull(GetCodexConfigTomlPath());
+            if (content == null)
+                return null;
+            return CodexConfigContainsServer(content, serverName);
+        }
+
+        private static string GetCodexConfigTomlPath()
+        {
+            var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+            var baseDir = string.IsNullOrEmpty(codexHome)
+                ? Path.Combine(AIToolsSetupModel.GetUserHome(), ".codex")
+                : codexHome;
+            return Path.Combine(baseDir, "config.toml");
+        }
+
+        /// <summary>
+        /// True when a Codex config.toml declares the [mcp_servers.<paramref name="serverName"/>]
+        /// table. Anchored to the table header so a sibling like [mcp_servers.meta-xr-operator]
+        /// isn't matched.
+        /// </summary>
+        internal static bool CodexConfigContainsServer(string configToml, string serverName)
+        {
+            if (string.IsNullOrEmpty(configToml))
+                return false;
+            var name = System.Text.RegularExpressions.Regex.Escape(serverName);
+            var pattern = $@"(?m)^\s*\[mcp_servers\.(?:{name}|""{name}"")[\].]";
+            return System.Text.RegularExpressions.Regex.IsMatch(configToml, pattern);
+        }
+
+        // --- Muse Code config-file check (Muse has no usable `mcp list`; read settings.json) ---
+
+        // metavr writes Muse's settings.json (user scope only) with a standard mcpServers map. Null
+        // when the file is absent so VerifyAsync can treat "no file" as "not registered" rather than
+        // spawning `muse`, whose `mcp` subcommand is OAuth-only and whose bare launch opens the
+        // interactive TUI.
+        private static bool? MuseConfigHasServer(string serverName)
+        {
+            var content = ReadFileOrNull(MuseSettingsPathFrom(
+                GetMuseHome(), Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")));
+            if (content == null)
+                return null;
+            return MuseSettingsContainServer(content, serverName);
+        }
+
+        // Mirrors metavr's muse_config_path_from: an absolute XDG_CONFIG_HOME wins, a relative one
+        // is ignored, otherwise <home>/.config. Path is <root>/muse/settings.json.
+        internal static string MuseSettingsPathFrom(string home, string xdgConfigHome)
+        {
+            var root = (!string.IsNullOrEmpty(xdgConfigHome) && Path.IsPathRooted(xdgConfigHome))
+                ? xdgConfigHome
+                : Path.Combine(home, ".config");
+            return Path.Combine(root, "muse", "settings.json");
+        }
+
+        // Mirrors metavr's skills::home() (HOME then USERPROFILE) so the Muse skill and MCP entry
+        // land under the same root.
+        private static string GetMuseHome()
+        {
+            var home = Environment.GetEnvironmentVariable("HOME");
+            if (!string.IsNullOrEmpty(home))
+                return home;
+            var userProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+            if (!string.IsNullOrEmpty(userProfile))
+                return userProfile;
+            return AIToolsSetupModel.GetUserHome();
+        }
+
+        /// <summary>
+        /// True when a Muse settings.json registers <paramref name="serverName"/> under mcpServers
+        /// WITH a `mode` field. metavr always writes "mode":"optional"; an entry missing `mode` is
+        /// Muse's broken `required` default that the installer exists to repair, so it must not
+        /// verify green.
+        /// </summary>
+        internal static bool MuseSettingsContainServer(string settingsJson, string serverName)
+        {
+            if (string.IsNullOrEmpty(settingsJson))
+                return false;
+            try
+            {
+                var entry = JsonObject.Parse(settingsJson)["mcpServers"]?[serverName];
+                return entry != null && entry["mode"] != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Whether the pre-install legacy-entry cleanup should spawn the agent CLI. False for agents
+        /// with no `mcp remove` command (OpenCode, Muse Code), where the spawn is useless and can
+        /// stall or launch an interactive TUI.
+        /// </summary>
+        internal static bool ShouldRunLegacyCleanup(string serviceId) =>
+            serviceId != OpenCodeService.ServiceId && serviceId != MuseCodeService.ServiceId;
+
+        /// <summary>True when a JSON document registers mcpServers.<paramref name="serverName"/>.</summary>
+        internal static bool JsonMcpServersContain(string json, string serverName)
+        {
+            if (string.IsNullOrEmpty(json))
+                return false;
+            try
+            {
+                return JsonObject.Parse(json)["mcpServers"]?[serverName] != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Separator- and case-insensitive compare (Claude project keys use forward slashes on Windows).
+        private static bool PathsEqual(string a, string b) =>
+            string.Equals(NormalizePath(a), NormalizePath(b), StringComparison.OrdinalIgnoreCase);
+
+        private static string NormalizePath(string path) =>
+            string.IsNullOrEmpty(path) ? string.Empty : path.Replace('\\', '/').TrimEnd('/');
 
         private static string ReadFileOrNull(string path)
         {
@@ -370,7 +562,8 @@ namespace Meta.XR.Editor
 
         private async Task<bool> RegisterAsync(SetupContext ctx, CancellationToken token)
         {
-            if (SelectedTransport == TransportMode.McpProxy)
+            if (SelectedTransport == TransportMode.McpProxy
+                || MetaVrCliXrOperator.AlwaysRegistersViaProxy(ctx.ServiceId))
                 return await RegisterProxyAsync(ctx, token);
             return await RegisterSSEAsync(ctx, token);
         }
@@ -391,15 +584,17 @@ namespace Meta.XR.Editor
             // Migration cleanup: best-effort removal of a stale meta-xr-operator entry left by the
             // old bundled-proxy flow, so the agent doesn't end up with both it and metavr.
             //
-            // Skipped for OpenCode: it has no `mcp` CLI (its old flow was manual-only, so there is
-            // nothing to remove) and spawning `opencode` with unknown args launches its interactive
-            // TUI, which then hangs until the timeout — the same reason VerifyAsync special-cases it.
+            // Skipped for OpenCode and Muse Code: neither has an `mcp remove` CLI (OpenCode's old
+            // flow was manual-only; Muse's `mcp` subcommand is OAuth login/out only), and spawning
+            // them with unknown args risks launching an interactive TUI that hangs until the
+            // timeout — the same reason VerifyAsync special-cases them. metavr writes their config
+            // itself, so there is nothing to clean up here anyway.
             //
             // MUST be try/catch: RunProcessAsync does not return an error code for a missing
             // executable, it throws. Unguarded, an agent CLI that isn't on Unity's PATH would fail
             // the whole registration even though `metavr mcp install <agent>` writes the config file
             // itself and never needs that CLI.
-            if (ctx.ServiceId != OpenCodeService.ServiceId)
+            if (ShouldRunLegacyCleanup(ctx.ServiceId))
             {
                 try
                 {
@@ -513,7 +708,10 @@ namespace Meta.XR.Editor
 
             // DirectSSE is unchanged: it still registers the server under its own name, pointing at
             // the OpenXR layer's SSE endpoint rather than at metavr.
-            if (SelectedTransport == TransportMode.DirectSSE)
+            // Services that can't register the SSE server at all (Muse Code) skip this block and
+            // fall through to the proxy command below, so the card still offers a working Run.
+            if (SelectedTransport == TransportMode.DirectSSE
+                && !MetaVrCliXrOperator.AlwaysRegistersViaProxy(serviceId))
             {
                 var sseCommand = $"{serviceExecutable} mcp add {OperatorMcpName} -t sse {DefaultSSEUrl}";
 
@@ -563,7 +761,12 @@ namespace Meta.XR.Editor
             {
                 Label = AIToolsSetupStrings.Registration.RuntimeToolsLabel,
                 Description = AIToolsSetupStrings.Registration.RuntimeToolsDescription,
-                Command = command
+                Command = command,
+                // Reached with Direct SSE selected only for services that can't register it. The
+                // command then contradicts the selected transport, so explain why.
+                HelperText = SelectedTransport == TransportMode.DirectSSE
+                    ? AIToolsSetupStrings.Registration.ProxyFallbackHelper
+                    : null
             };
         }
 
@@ -827,6 +1030,44 @@ namespace Meta.XR.Editor
             return File.Exists(Path.Combine(destDir, skillName, "SKILL.md"));
         }
 
+        /// <summary>
+        /// True when a skill is installed for the service but its on-disk copy differs from the
+        /// SDK-bundled source, so an update is available. False when the skill isn't installed (that
+        /// is "install", not "update") or when the bundled source can't be resolved — never surface
+        /// an Update we can't satisfy.
+        /// </summary>
+        internal static bool SkillNeedsUpdate(string skillName, string serviceId, string projectRoot)
+        {
+            try
+            {
+                if (!IsSkillInstalled(skillName, serviceId, projectRoot))
+                    return false;
+
+                var sourceDir = FindSkillsDirectory();
+                if (sourceDir == null)
+                    return false;
+
+                var sourceSkillDir = Path.Combine(sourceDir, skillName);
+                if (!Directory.Exists(sourceSkillDir) || !HasSkillEntryFile(sourceSkillDir))
+                    return false;
+
+                var destDir = GetSkillsDestinationForService(serviceId, projectRoot);
+                if (string.IsNullOrEmpty(destDir))
+                    return false;
+
+                return !SkillDirectoryMatches(sourceSkillDir, Path.Combine(destDir, skillName));
+            }
+            catch (Exception e)
+            {
+                // A detection hiccup (transient IO, resolution failure) must never nag with a
+                // spurious Update button or break the panel refresh. Log it (verbose-gated) so a
+                // persistent failure — e.g. restricted read permissions that keep an available
+                // Update hidden forever — is still diagnosable.
+                MetaXROperatorLog.Warning($"SkillNeedsUpdate('{skillName}') failed: {e}");
+                return false;
+            }
+        }
+
         internal (int count, string destination, string error) InstallSkills(
             string serviceId, string projectRoot = null)
         {
@@ -847,8 +1088,8 @@ namespace Meta.XR.Editor
                 foreach (var skillDir in Directory.GetDirectories(sourceDir))
                 {
                     if (!HasSkillEntryFile(skillDir)) continue;
-                    CopySkillDirectory(skillDir,
-                        Path.Combine(destDir, Path.GetFileName(skillDir)));
+                    var target = Path.Combine(destDir, Path.GetFileName(skillDir));
+                    InstallSingleSkill(skillDir, target);
                     count++;
                 }
 
@@ -863,7 +1104,8 @@ namespace Meta.XR.Editor
             }
         }
 
-        internal async Task InstallSkillsManualAsync(string serviceId, Action onStateChanged)
+        internal async Task InstallSkillsManualAsync(
+            string serviceId, Action onStateChanged)
         {
             var projectRoot = AIToolsSetupModel.GetCurrentProjectRoot();
             var result = await Task.Run(() => InstallSkills(serviceId, projectRoot));
@@ -912,6 +1154,43 @@ namespace Meta.XR.Editor
                 CopySkillDirectory(childDir,
                     Path.Combine(destDir, Path.GetFileName(childDir)));
             }
+        }
+
+        // Overlay SDK content onto any existing install; files the user added are left in place.
+        internal static void InstallSingleSkill(string sourceSkillDir, string target)
+        {
+            CopySkillDirectory(sourceSkillDir, target);
+        }
+
+        // True when every current-source file is present and byte-equal in destDir, under the rules
+        // CopySkillDirectory applies (.meta ignored, skill.md -> SKILL.md). Files and subdirs the
+        // user added themselves are not stale.
+        internal static bool SkillDirectoryMatches(string sourceDir, string destDir)
+        {
+            if (!Directory.Exists(destDir))
+                return false;
+
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                if (file.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var fileName = Path.GetFileName(file);
+                if (string.Equals(fileName, "skill.md", StringComparison.OrdinalIgnoreCase))
+                    fileName = "SKILL.md";
+
+                if (!FileComparison.ContentsEqual(file, Path.Combine(destDir, fileName)))
+                    return false;
+            }
+
+            foreach (var childDir in Directory.GetDirectories(sourceDir))
+            {
+                if (!SkillDirectoryMatches(
+                        childDir, Path.Combine(destDir, Path.GetFileName(childDir))))
+                    return false;
+            }
+
+            return true;
         }
 
         // --- Advanced settings UI ---
@@ -1063,10 +1342,21 @@ namespace Meta.XR.Editor
 
             var projectRoot = AIToolsSetupModel.GetCurrentProjectRoot();
             var skillNames = GetBundledSkillNames();
+
+            // Compute each skill's install/update status once per render. Both the button state
+            // (the updatable count) and the per-skill list icons derive from this snapshot, so the
+            // recursive byte comparison in SkillNeedsUpdate runs at most once per skill per render
+            // instead of once for the count and again for the list.
+            var installedByName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var needsUpdateByName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             var installedCount = 0;
             foreach (var name in skillNames)
             {
-                if (IsSkillInstalled(name, serviceId, projectRoot))
+                var isInstalled = IsSkillInstalled(name, serviceId, projectRoot);
+                installedByName[name] = isInstalled;
+                needsUpdateByName[name] =
+                    isInstalled && SkillNeedsUpdate(name, serviceId, projectRoot);
+                if (isInstalled)
                     installedCount++;
             }
 
@@ -1082,6 +1372,18 @@ namespace Meta.XR.Editor
             }
 
             var allInstalled = skillNames.Count > 0 && installedCount == skillNames.Count;
+
+            // Only meaningful once everything is present: while any skill is still missing the CTA
+            // is "Install" (which also refreshes stale ones), so an update count would go unused.
+            var updatableCount = 0;
+            if (allInstalled)
+            {
+                foreach (var name in skillNames)
+                {
+                    if (needsUpdateByName[name])
+                        updatableCount++;
+                }
+            }
 
             var description = new Label(AIToolsSetupStrings.Descriptions.SkillsSection);
             description.AddToClassList(RLDSConstants.Typography.Body2SupportingText);
@@ -1102,11 +1404,11 @@ namespace Meta.XR.Editor
 
             if (skillNames.Count > 0)
             {
-                container.Add(BuildSkillsList(skillNames, serviceId, projectRoot));
+                container.Add(BuildSkillsList(skillNames, installedByName, needsUpdateByName));
                 AddSpacer(container, RLDSConstants.Spacing.SizeSM);
             }
 
-            if (allInstalled)
+            if (allInstalled && updatableCount == 0)
             {
                 // Always confirm the installed state, including across sessions when there was no
                 // install action this session. Rendered as a disabled "Installed" button with a
@@ -1135,19 +1437,24 @@ namespace Meta.XR.Editor
             }
             else
             {
-                var installCurrentBtn = new UnityEngine.UIElements.Button(() =>
+                // All present but at least one stale -> Update; otherwise Install (which also
+                // refreshes any already-installed skill, since the copy overwrites).
+                var isUpdate = allInstalled;
+                var actionBtn = new UnityEngine.UIElements.Button(() =>
                     _ = InstallSkillsManualAsync(serviceId, onStateChanged))
                 {
                     text = string.Format(
-                        AIToolsSetupStrings.Buttons.InstallSkillsFormat,
+                        isUpdate
+                            ? AIToolsSetupStrings.Buttons.UpdateSkillsFormat
+                            : AIToolsSetupStrings.Buttons.InstallSkillsFormat,
                         AIServiceRegistry.GetService(serviceId)?.DisplayName ?? serviceId)
                 };
-                installCurrentBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
-                installCurrentBtn.style.alignSelf = Align.FlexStart;
-                installCurrentBtn.style.marginBottom = RLDSConstants.Spacing.SizeXS;
-                container.Add(installCurrentBtn);
+                actionBtn.AddToClassList(RLDSConstants.Button.SecondarySmall);
+                actionBtn.style.alignSelf = Align.FlexStart;
+                actionBtn.style.marginBottom = RLDSConstants.Spacing.SizeXS;
+                container.Add(actionBtn);
 
-                // Surface a failed/partial result from the last install attempt.
+                // Surface a failed/partial result from the last install/update attempt.
                 if (SkillsInstallResultMessage != null
                     && _skillsInstallServiceId == serviceId
                     && !SkillsInstallResultSuccess)
@@ -1158,11 +1465,14 @@ namespace Meta.XR.Editor
         }
 
         /// <summary>
-        /// Two-column list of the bundled skills, each with a status icon: a green check when the
-        /// skill is installed for the selected service, a muted check otherwise.
+        /// Two-column list of the bundled skills, each with a status icon: a muted remove icon when
+        /// the skill isn't installed for the selected service, a green check when it is installed and
+        /// current, and an amber warning when it is installed but an update is available.
         /// </summary>
         private static VisualElement BuildSkillsList(
-            List<string> skillNames, string serviceId, string projectRoot)
+            List<string> skillNames,
+            IReadOnlyDictionary<string, bool> installedByName,
+            IReadOnlyDictionary<string, bool> needsUpdateByName)
         {
             var grid = new VisualElement();
             grid.style.flexDirection = FlexDirection.Row;
@@ -1170,7 +1480,8 @@ namespace Meta.XR.Editor
 
             foreach (var name in skillNames)
             {
-                var installed = IsSkillInstalled(name, serviceId, projectRoot);
+                var installed = installedByName[name];
+                var needsUpdate = needsUpdateByName[name];
 
                 var item = new VisualElement();
                 item.style.flexDirection = FlexDirection.Row;
@@ -1180,12 +1491,24 @@ namespace Meta.XR.Editor
 
                 var icon = new VisualElement();
                 icon.AddToClassList(RLDSConstants.StatusNotice.Icon);
-                icon.style.backgroundImage = (installed
-                    ? UserInterface.Styles.Contents.CheckMaskIcon
-                    : UserInterface.Styles.Contents.RemoveCircleMaskIcon).Image as Texture2D;
-                icon.style.unityBackgroundImageTintColor = installed
-                    ? RLDSStyles.Colors.TextPositive
-                    : RLDSStyles.Colors.IconSecondary;
+                if (!installed)
+                {
+                    icon.style.backgroundImage =
+                        UserInterface.Styles.Contents.RemoveCircleMaskIcon.Image as Texture2D;
+                    icon.style.unityBackgroundImageTintColor = RLDSStyles.Colors.IconSecondary;
+                }
+                else if (needsUpdate)
+                {
+                    icon.style.backgroundImage =
+                        UserInterface.Styles.Contents.WarningMaskIcon.Image as Texture2D;
+                    icon.style.unityBackgroundImageTintColor = RLDSStyles.Colors.TextWarning;
+                }
+                else
+                {
+                    icon.style.backgroundImage =
+                        UserInterface.Styles.Contents.CheckMaskIcon.Image as Texture2D;
+                    icon.style.unityBackgroundImageTintColor = RLDSStyles.Colors.TextPositive;
+                }
                 icon.style.marginRight = RLDSConstants.Spacing.Size2XS;
                 item.Add(icon);
 

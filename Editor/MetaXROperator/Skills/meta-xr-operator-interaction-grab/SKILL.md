@@ -8,7 +8,7 @@ allowed-tools:
 
 # Meta XR Operator Interaction Grab
 
-How to grab and manipulate Meta XR Interaction SDK grabbables — covers close-range hand/controller grabs, distance grabs, and constrained interactables (lids, doors, drawers). See **meta-xr-operator-grabbed-objects** for post-grab aiming, **meta-xr-operator-coordinates** for coordinate conversion.
+How to grab and manipulate Meta XR Interaction SDK grabbables — covers close-range hand/controller grabs, distance grabs, and constrained interactables (lids, doors, drawers). See **hz-meta-xr-operator-grabbed-objects** for post-grab aiming, **hz-meta-xr-operator-coordinates** for coordinate conversion.
 
 ## Identifying Grabbables
 
@@ -81,3 +81,4 @@ For orientation: pull-to-hand and relative-to-hand rotate with the controller (r
 6. **Manipulate-in-place rotates target on grab** — non-identity grab orientation snaps the target to that orientation. Use identity to preserve original rotation.
 7. **Translation-only provider test** — ambiguous between relative-to-hand and manipulate-in-place. Always do the rotation-only test.
 8. **Duplicate-named root objects** — `unity_get_world_pose("Name")` returns only the first sibling. Use screenshots or instance-ID enumeration for the others.
+9. **Debugging blind on hardware** — when a grab silently fails on a headset, check `metavr log` right after the attempt; it often shows the app-side reason (missing interactor, disabled profile) that the layer can't see.

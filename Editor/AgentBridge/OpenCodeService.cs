@@ -574,10 +574,8 @@ namespace Meta.XR.AI.AgentBridge
                     return _currentValidationResult;
                 }
 
-                // Try to run "opencode --version" to verify the CLI is available.
-                // Routed through ConfigureExecutable so that on Windows, where npm installs OpenCode
-                // as a .cmd shim that CreateProcess cannot launch directly, the probe runs via
-                // cmd.exe /c instead of throwing a Win32Exception (a false "OpenCode not found").
+                // Route through ConfigureExecutable: on Windows OpenCode is a .cmd shim CreateProcess
+                // can't launch directly (Win32Exception -> a false "OpenCode not found").
                 var processStartInfo = new ProcessStartInfo
                 {
                     UseShellExecute = false,

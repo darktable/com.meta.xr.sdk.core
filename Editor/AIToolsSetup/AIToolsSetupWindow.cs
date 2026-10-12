@@ -527,7 +527,7 @@ namespace Meta.XR.Editor
                 }
                 else
                 {
-                    AddCommandBlock(card, regInfo.Value.Command);
+                    AddCommandBlock(card, regInfo.Value.Command, regInfo.Value.HelperText);
                     AddColumnRunAndStatus(card,
                         installComplete,
                         _model.Step2RuntimeState,

@@ -298,6 +298,12 @@ namespace Meta.XR.AI.AgentBridge
             string serviceName,
             string? standardInput = null)
         {
+            if (processStartInfo.RedirectStandardInput)
+            {
+                // Process.Start throws if this is set without the matching redirect.
+                processStartInfo.StandardInputEncoding = new UTF8Encoding(false);
+            }
+
             processStartInfo.StandardOutputEncoding = Encoding.UTF8;
             processStartInfo.StandardErrorEncoding = Encoding.UTF8;
             using var process = new Process { StartInfo = processStartInfo };

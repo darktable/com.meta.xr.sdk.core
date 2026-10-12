@@ -80,6 +80,9 @@ namespace Meta.XR.RuntimeOptimizer.Core
             try
             {
                 OVRROP_0_0_1.ovrro_Shutdown("Unity", minVersion.ToString(), sessionId);
+#if UNITY_ANDROID
+                gpuProfilingInitialized = false;
+#endif
                 RO.Util.DebugLog("RuntimeOptimizer_Plugin Shutdown");
             }
             catch (DllNotFoundException)
@@ -136,14 +139,31 @@ namespace Meta.XR.RuntimeOptimizer.Core
         }
 
 #if UNITY_ANDROID
+    private static bool gpuProfilingInitialized;
+
+    private static bool EnsureGpuProfilingInitialized()
+    {
+        if (gpuProfilingInitialized)
+        {
+            return true;
+        }
+
+        gpuProfilingInitialized = OVRROP_0_0_1.ovrro_InitializeGpuProfiling();
+        return gpuProfilingInitialized;
+    }
+
     public static bool InitializeGpuProfiling()
     {
-        bool result = OVRROP_0_0_1.ovrro_InitializeGpuProfiling();
-        return result;
+        return EnsureGpuProfilingInitialized();
     }
 
     public static bool StartRealtimeMetrics(uint[] metricIds, int intervalMs)
     {
+        if (!EnsureGpuProfilingInitialized())
+        {
+            return false;
+        }
+
         bool result = OVRROP_0_0_1.ovrro_StartRealtimeMetrics(metricIds, metricIds.Length, intervalMs);
         UnityEngine.Debug.Log("RuntimeOptimizer_Plugin realtime metrics started: " + result);
         return result;
@@ -153,6 +173,12 @@ namespace Meta.XR.RuntimeOptimizer.Core
     {
         // Pre-allocate the array for the values
         float[] buffer = new float[metricCount];
+
+        if (!EnsureGpuProfilingInitialized())
+        {
+            value = buffer;
+            return false;
+        }
 
         // Call the native function with the pre-allocated buffer
         bool result = OVRROP_0_0_1.ovrro_GetMetrics(metricId, buffer, metricCount);
@@ -165,6 +191,12 @@ namespace Meta.XR.RuntimeOptimizer.Core
 
     public static bool GetFrameTime(int frameCount, out float[] frameTimes, string processName = "", bool stop = false)
     {
+        if (!EnsureGpuProfilingInitialized())
+        {
+            frameTimes = new float[0];
+            return false;
+        }
+
         // Allocate buffer for frame times.
         //
         // The native call reports success for three different outcomes: it started a trace, it
@@ -188,6 +220,16 @@ namespace Meta.XR.RuntimeOptimizer.Core
 
         frameTimes = ExtractWrittenSamples(buffer);
         return true;
+    }
+
+    public static bool ReleaseFrameTimeTrace()
+    {
+        if (!gpuProfilingInitialized)
+        {
+            return true;
+        }
+
+        return OVRROP_0_0_1.ovrro_ReleaseFrameTimeTrace();
     }
 #endif
 
@@ -228,7 +270,10 @@ namespace Meta.XR.RuntimeOptimizer.Core
             public static extern bool ovrro_GetMetrics([In] uint[] metricId, [Out] float[] value, int metricCount);
 
             [DllImport(pluginName, CallingConvention = CallingConvention.Cdecl)]
-            public static extern bool ovrro_GetFrameTime(int frameTimesCapacity, [Out] float[] frameTimes, string processName, bool stop = false);
+            public static extern bool ovrro_GetFrameTime(int frameTimesCapacity, [In, Out] float[] frameTimes, string processName, bool stop = false);
+
+            [DllImport(pluginName, CallingConvention = CallingConvention.Cdecl)]
+            public static extern bool ovrro_ReleaseFrameTimeTrace();
 #endif
         }
     }

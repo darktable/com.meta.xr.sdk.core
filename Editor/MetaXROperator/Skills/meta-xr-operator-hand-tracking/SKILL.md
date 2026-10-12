@@ -8,7 +8,11 @@ allowed-tools:
 
 # Meta XR Operator Hand Tracking
 
-`openxr_hand_gesture` / `openxr_set_hand_pose` inject a full-synthetic 26-joint hand you drive over MCP — no physical hand needed, on XR Simulator or Quest. For coordinate math see **hz-meta-xr-operator-coordinates**; for aiming a grabbed object (gun/tool) see **hz-meta-xr-operator-grabbed-objects**; for ISDK grabbables see **hz-meta-xr-operator-interaction-grab**.
+`openxr_hand_gesture` / `openxr_set_hand_pose` inject a full-synthetic 26-joint hand you drive over MCP — no physical hand needed, on XR Simulator or Meta VR devices. For coordinate math see **hz-meta-xr-operator-coordinates**; for aiming a grabbed object (gun/tool) see **hz-meta-xr-operator-grabbed-objects**; for ISDK grabbables see **hz-meta-xr-operator-interaction-grab**.
+
+## Required project setup
+
+Hands and eye gaze each silently no-op unless two things are enabled: (1) the **`OVRCameraRig`** `OVRManager` inspector → **Quest Features** — **Hand Tracking Support** = *Controllers and Hands* (or *Hands Only*) for hands, **Eye Tracking Support** = *Supported* for gaze+pinch; (2) The matching **OpenXR interaction profile** in *Project Settings → XR Plug-in Management → OpenXR* — **Hand Interaction Profile** (+ **Hand Tracking**) for hands, **Eye Gaze Interaction** for gaze.
 
 ## Mental model — pass a `target`, the layer solves the wrist
 
@@ -35,13 +39,13 @@ With `target` set the grasp HOLDS by default (so grab/pinch can carry an object)
 
 - **POKE** (button press): hover the index tip ~8 cm above the surface, then `openxr_set_hand_pose` to push ~2 cm through it — ISDK poke needs the fingertip to cross the surface downward, not teleport onto it.
 - **GRAB / PINCH-GRAB**: `openxr_hand_gesture(grab, target=…)` (palm, larger objects) or `(pinch, target=…)` (small objects); the open→close morph at the target is the edge-trigger. Carry with `openxr_set_hand_pose`; release with `gesture="open"`.
-- **AIM (hand ray)**: `openxr_hand_gesture(aim, target=…)` fits the ray through the target (read it from `openxr_get_hand_state`); capture once so the hover settles, then `pinch` → `open` — ray-select fires on release.
+- **AIM (hand ray)**: `openxr_hand_gesture(aim, target=…)` fits the ray through the target (read it from `openxr_get_hand_state`); capture once so the hover settles, then `pinch` → `open` — ray-select fires on release, so the release is required. Pass no `target` or `wrist_*` to the `pinch`/`open` (a `pinch` `target` solves a grasp *at* that point). The app's UI pointer is the wrist-rooted aim ray, which pinching does not move, so a full pinch is fine; verify with `aim_ray` plus a capture or state check (e.g. `unity_get_toggle_state`).
 
 To aim a **held object** (e.g. a gun) at a world target, calibrate the muzzle offset once, then drive `openxr_set_hand_pose(wrist_orientation=…)` and fire with `openxr_hand_gesture(pinch)` — see **hz-meta-xr-operator-grabbed-objects**.
 
 ## Gaze + pinch (eye tracking)
 
-Eye-tracked select/manipulate — aim the gaze ray, pinch to act. Requires the **Eye Gaze Interaction** profile enabled (see Switching). Aim by **direction from the eye**: `dir = target − CenterEyeAnchor`, `math_build_quat([dir.x, dir.y, −dir.z])`, passed as the gaze orientation in the scene's `base_space` (gaze is independent of head orientation).
+Eye-tracked select/manipulate — aim the gaze ray, pinch to act. Requires the **Eye Gaze Interaction** profile enabled (see Switching); if it's off or the headset does not support it, gaze+pinch silently no-ops or is unavailable — use the hand ray (**AIM** recipe above) instead. Aim by **direction from the eye**: `dir = target − CenterEyeAnchor`, `math_build_quat([dir.x, dir.y, −dir.z])`, passed as the gaze orientation in the scene's `base_space` (gaze is independent of head orientation).
 
 - **Select** (buttons/toggles): either `openxr_gaze_and_pinch` (atomic; `keep_gaze=true` to verify the reticle landed) or `openxr_set_eye_gaze_pose` then `openxr_hand_gesture(pinch)` — equivalent; gaze aims, pinch selects on release. **Precision matters**: the gaze must land on the *specific* interactable (a near-miss — e.g. the panel instead of its play button — selects nothing); confirm with `unity_get_toggle_state` or the gaze-hover highlight.
 - **Distance-grab** (move an object from afar): gaze at the object, then a **sticky** `openxr_hand_gesture(pinch, auto_release=false)` grabs it; `openxr_set_hand_pose` then drags it 1:1 with the wrist; `gesture="open"` releases. The hand can be anywhere — gaze picks the target, hand motion moves it.
@@ -53,7 +57,7 @@ Injecting a synthetic hand is delivered **per hand** and does not hang, even whi
 - **Override BOTH hands when two controllers are held** — the layer only suppresses the controller for a hand you actually simulate, so a controller you leave in place keeps that side in controller mode.
 - Confirm the bound profile with `openxr_get_active_interaction_profile`; a modality silently no-ops if its OpenXR interaction profile is disabled in project settings (no Hand Interaction Profile → no hand ray; no Eye Gaze Interaction → no gaze+pinch).
 
-## Quest vs XR Simulator
+## Meta VR devices vs XR Simulator
 
-- On Quest, `openxr_set_head_pose` is unavailable (you can't reframe the camera) — aim from the real `openxr_get_head_pose` and verify via transform/toggle deltas, not by centering a capture.
-- The grab/fist default approach orientation is anchored to the publish frame, which is yaw-rotated from `local_floor` on a real headset — pass an explicit `wrist_orientation` to keep it scene-consistent. The grab still snaps and carries 1:1.
+- On Meta VR devices, `openxr_set_head_pose` is unavailable (you can't reframe the camera) — aim from the real `openxr_get_head_pose` and verify via transform/toggle deltas, not by centering a capture.
+- When running on hardware, sanity-check the attached headset first (`metavr device list`) — hand-tracking availability and eye-gaze support vary by device, and the layer can't inject what the device doesn't expose.

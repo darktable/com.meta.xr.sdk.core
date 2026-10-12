@@ -180,6 +180,7 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
 
         // GPU trace state tracking for 2-step profiling process
         private bool gpuTraceInProgress = false;
+        private bool gpuTraceReservedForSceneAnalysis = false;
         private DateTime gpuTraceStartTime = DateTime.MinValue;
         private const float kGpuTraceWaitTime = 2.0f; // Wait 1 second between start and stop
 
@@ -218,10 +219,8 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
         {
 #if UNITY_EDITOR
             MockInitialize("", "");
-            MockInitializeGpuProfiling();
 #else
             RuntimeOptimizerPlugin.Initialize("", "");
-            RuntimeOptimizerPlugin.InitializeGpuProfiling();
 #endif
             // Use dynamic port discovery to handle port conflicts
             int port = server.StartListeningWithPortDiscovery(12345, 12445);
@@ -244,6 +243,10 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
         }
         private void OnDestroy()
         {
+#if !UNITY_EDITOR
+            ReleaseGpuTrace();
+            RuntimeOptimizerPlugin.Shutdown();
+#endif
             drawCallsRecorder.Dispose();
             verticesRecorder.Dispose();
             triganleRecorder.Dispose();
@@ -275,14 +278,16 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
 
                     // Find the specified game objects
                     List<GameObject> specificObjects = new List<GameObject>();
+                    HashSet<GameObject> resolvedObjects = new HashSet<GameObject>();
                     foreach (string name in gameObjectNames)
                     {
-                        string searchName = name.Replace("//", "/");
+                        string searchName = name.Replace("//", "/").Trim().Trim('/');
                         Debug.Log($"[RuntimeOptimizer] Searching for: {searchName}");
-                        GameObject obj = GameObject.Find(searchName);
+                        GameObject obj = FindGameObjectByPath(searchName, resolvedObjects);
                         if (obj != null)
                         {
                             Debug.Log($"[RuntimeOptimizer] Found object: {obj.name}");
+                            resolvedObjects.Add(obj);
                             specificObjects.Add(obj);
                         }
                         else
@@ -291,6 +296,13 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
                         }
                     }
                     Debug.Log($"[RuntimeOptimizer] Starting selective analysis with {specificObjects.Count} objects");
+                    if (specificObjects.Count == 0)
+                    {
+                        Debug.LogError("[RuntimeOptimizer] None of the requested GameObjects could be resolved");
+                        var bytes = Encoding.ASCII.GetBytes("failed;");
+                        SendToClients(PerformanceDataUtils.SceneDiagnosisDataId, bytes);
+                        return;
+                    }
                     StartSceneAnalysis(specificObjects);
                 }
                 else
@@ -306,11 +318,13 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
             }
             else if (decodedString == "captureInsights")
             {
+                ReleaseGpuTrace();
                 InsightCaptureRequested();
             }
             else if (decodedString == "captureInsightsFreeze")
                 {
                     FreezeDeltaTime(true);
+                ReleaseGpuTrace();
                 InsightCaptureRequested();
             }
             else if (decodedString == "freeze")
@@ -319,6 +333,8 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
             }
             else if (decodedString == "unfreeze")
             {
+                StopReservedGpuTrace();
+                ReleaseGpuTrace();
                 FreezeDeltaTime(false);
             }
             else if (decodedString == "requestQuickPerf")
@@ -407,6 +423,7 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
 #else
             RuntimeOptimizerPlugin.GetFrameTime(1, out frameTimes, Application.identifier, true);
 #endif
+            gpuTraceReservedForSceneAnalysis = false;
         }
 
         private void StartSceneAnalysis(List<GameObject> specificGameObjects = null)
@@ -461,6 +478,10 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
 #else
                 Debug.LogError("StartGpuProfiling failed to start. Make sure you run adb shell ovrgpuprofiler -e before running this test.");
 #endif
+            }
+            else
+            {
+                gpuTraceReservedForSceneAnalysis = false;
             }
         }
 
@@ -535,6 +556,11 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
 
                 var now = DateTime.Now;
                 float currentCpuFrameTime = (float)quickPerfFrameTiming[0].cpuMainThreadFrameTime;
+                float currentGpuFrameTime = (float)quickPerfFrameTiming[0].gpuFrameTime;
+                if (currentGpuFrameTime > 0.0f)
+                {
+                    lastValidGpuFrameTime = currentGpuFrameTime;
+                }
 
                 // Add to CPU sliding window
                 frameTimes.Enqueue((now, currentCpuFrameTime));
@@ -629,9 +655,16 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
             //poll
             success = RuntimeOptimizerPlugin.GetFrameTime(kQuickPerfGpuBufferSize, out frameTimes, Application.identifier);
 
-            // then stop
-            float[] flushTimes;
-            RuntimeOptimizerPlugin.GetFrameTime(1,out flushTimes, Application.identifier, true);
+            if (isFrozen)
+            {
+                gpuTraceReservedForSceneAnalysis = true;
+            }
+            else
+            {
+                float[] flushTimes;
+                RuntimeOptimizerPlugin.GetFrameTime(1, out flushTimes, Application.identifier, true);
+                gpuTraceReservedForSceneAnalysis = false;
+            }
 #endif
 
             if (!success || frameTimes == null || frameTimes.Length == 0)
@@ -641,7 +674,7 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
 
             int validCount = 0;
             double totalGpuFrameTime = 0.0;
-            for(int i = 0; i < kQuickPerfGpuBufferSize; i++){
+            for(int i = 0; i < frameTimes.Length; i++){
                 if(frameTimes[i] > 0.0f){
                     totalGpuFrameTime += frameTimes[i];
                     validCount++;
@@ -651,6 +684,31 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
                 return -1.0f;
             }
             return (float)(totalGpuFrameTime / (double)validCount);
+        }
+
+        private void StopReservedGpuTrace()
+        {
+            if (!gpuTraceReservedForSceneAnalysis)
+            {
+                return;
+            }
+
+            float[] frameTimes;
+#if UNITY_EDITOR
+            MockGetFrameTime(1, out frameTimes, Application.identifier, true);
+#else
+            RuntimeOptimizerPlugin.GetFrameTime(1, out frameTimes, Application.identifier, true);
+#endif
+            gpuTraceReservedForSceneAnalysis = false;
+        }
+
+        private void ReleaseGpuTrace()
+        {
+#if !UNITY_EDITOR
+            RuntimeOptimizerPlugin.ReleaseFrameTimeTrace();
+#endif
+            gpuTraceInProgress = false;
+            gpuTraceReservedForSceneAnalysis = false;
         }
 
         private void SendUnifiedPerfData(DateTime now, float averageGPUTime)
@@ -1043,7 +1101,6 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
                     else
                     {
                         recordMetrics();
-                        gameObjectsInFrustrum[0].SetActive(true);
                         ClearSceneAnalysis(unfreeze: false);
                     }
                 }
@@ -1149,6 +1206,48 @@ namespace Meta.XR.RuntimeOptimizer.Scripts
                 }
             }
             return renderableObjects;
+        }
+
+        // Siblings with the same name share a path, so the frustum list can name one path several
+        // times; skipping objects already resolved maps each entry to a distinct object.
+        private GameObject FindGameObjectByPath(string path, HashSet<GameObject> exclude)
+        {
+            GameObject activeObject = GameObject.Find(path);
+            if (activeObject != null && !exclude.Contains(activeObject))
+            {
+                return activeObject;
+            }
+
+            GameObject nameMatch = null;
+            GameObject[] allObjects = FindObjectsByType<GameObject>(
+                FindObjectsInactive.Include,
+                FindObjectsSortMode.None
+            );
+            foreach (GameObject candidate in allObjects)
+            {
+                if (exclude.Contains(candidate))
+                {
+                    continue;
+                }
+
+                if (candidate.name == path)
+                {
+                    nameMatch = candidate;
+                }
+
+                string candidatePath = candidate.name;
+                Transform parent = candidate.transform.parent;
+                while (parent != null)
+                {
+                    candidatePath = parent.name + "/" + candidatePath;
+                    parent = parent.parent;
+                }
+                if (candidatePath == path)
+                {
+                    return candidate;
+                }
+            }
+            return nameMatch;
         }
 
         private void FreezeDeltaTime(bool enabled)

@@ -171,6 +171,8 @@ namespace Meta.XR.Editor.Rules
                 fixMessage: "Add Oculus Touch Controller Interaction Profile"
             );
 
+            RegisterEyeGazeInteractionProfileTask();
+
 #if UNITY_OPENXR_PLUGIN_1_15_0_OR_NEWER && UNITY_6000_1_OR_NEWER
             OVRProjectSetup.AddTask(
                 conditionalValidity: buildTargetGroup => GetSettings(buildTargetGroup) != null &&
@@ -250,6 +252,47 @@ namespace Meta.XR.Editor.Rules
                 fixMessage: "Enable Oculus Touch Controller Proximity Profile"
             );
 #endif
+        }
+
+        internal static OVRConfigurationTask RegisterEyeGazeInteractionProfileTask(
+            Func<BuildTargetGroup, EyeGazeInteraction> getEyeGazeInteraction = null,
+            Func<bool> isEyeTrackingEnabled = null,
+            Func<bool> isOpenXRInstalled = null,
+            Action<BuildTargetGroup> refreshFeatures = null)
+        {
+            getEyeGazeInteraction ??=
+                buildTargetGroup => GetSettings(buildTargetGroup)?.GetFeature<EyeGazeInteraction>();
+            isEyeTrackingEnabled ??= () =>
+                OVRProjectConfig.CachedProjectConfig.eyeTrackingSupport != OVRProjectConfig.FeatureSupport.None;
+            isOpenXRInstalled ??= () =>
+                PackageList.IsPackageInstalled(OVRProjectSetupXRTasks.UnityXRPackage);
+            refreshFeatures ??= FeatureHelpers.RefreshFeatures;
+
+            return OVRProjectSetup.RegisterTask(
+                conditionalValidity: buildTargetGroup =>
+                    (buildTargetGroup == BuildTargetGroup.Android ||
+                     buildTargetGroup == BuildTargetGroup.Standalone) &&
+                    isOpenXRInstalled() &&
+                    isEyeTrackingEnabled() &&
+                    getEyeGazeInteraction(buildTargetGroup) != null,
+                level: OVRProjectSetup.TaskLevel.Required,
+                group: OVRProjectSetup.TaskGroup.Packages,
+                isDone: buildTargetGroup => getEyeGazeInteraction(buildTargetGroup)?.enabled ?? false,
+                message: "When using eye tracking with OpenXR, the Eye Gaze Interaction Profile must be enabled.",
+                fix: buildTargetGroup =>
+                {
+                    var eyeGazeInteraction = getEyeGazeInteraction(buildTargetGroup);
+                    if (eyeGazeInteraction == null)
+                    {
+                        throw new InvalidOperationException(
+                            "Could not find the Eye Gaze Interaction Profile in OpenXR settings");
+                    }
+
+                    eyeGazeInteraction.enabled = true;
+                    refreshFeatures(buildTargetGroup);
+                },
+                fixMessage: "Enable the Eye Gaze Interaction Profile"
+            );
         }
 
         private static UnityEngine.XR.OpenXR.OpenXRSettings GetSettings(BuildTargetGroup buildTargetGroup)

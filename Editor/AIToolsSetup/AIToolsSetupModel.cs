@@ -158,10 +158,9 @@ namespace Meta.XR.Editor
         internal bool SelectedServiceIsKnownNotInstalled =>
             SelectedServiceInstallState == InstallCheckState.NotInstalled;
 
-        // Services whose IServiceValidation does NOT reflect CLI installation and/or is slow, so they
-        // must not drive the install-detection warning. Devmate's validation probes a local HTTP bridge
-        // (VS Code extension) with a multi-second timeout — "Invalid" means the bridge is down, not that
-        // a CLI is missing — so we rely on the launch-time "is it installed and in your PATH?" error instead.
+        // Devmate is excluded from install-detection because its IServiceValidation probes a local HTTP
+        // bridge (VS Code extension), not a PATH CLI — an "Invalid" result means the bridge is down, not
+        // that a CLI is missing — so we rely on the launch-time "is it installed and in your PATH?" error.
         private static readonly HashSet<string> InstallDetectionExcludedServiceIds =
             new() { "devmate" };
 

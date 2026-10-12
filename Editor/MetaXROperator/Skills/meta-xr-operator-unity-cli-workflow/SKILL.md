@@ -1,6 +1,6 @@
 ---
 name: hz-meta-xr-operator-unity-cli-workflow
-description: End-to-end develop-test loop for Unity XR on Meta Quest and Horizon OS via the XR Simulator. Edits the running Editor with the `unity` CLI (Unity Editor Pipeline bridge) for scene edits, live C# eval, compilation, and Play Mode control, and validates at runtime with the Meta XR Operator (openxr_*) MCP tools.
+description: End-to-end develop-test loop for Unity XR on Meta VR and Horizon OS via the XR Simulator. Edits the running Editor with the `unity` CLI (Unity Editor Pipeline bridge) for scene edits, live C# eval, compilation, and Play Mode control, and validates at runtime with the Meta XR Operator (openxr_*) MCP tools.
 allowed-tools:
   - Bash(unity:*)
   - Bash(metavr:*)
@@ -140,7 +140,7 @@ Expected lifecycle: IDLE → READY → SYNCHRONIZED → VISIBLE → FOCUSED.
 openxr_get_head_pose()
 ```
 
-Confirm all tracking flags (`position_valid`, `orientation_valid`, `position_tracked`, `orientation_tracked`) are true.
+Confirm all tracking flags (`position_valid`, `orientation_valid`, `position_tracked`, `orientation_tracked`) are true. (Controller poses may read inactive until you first set them — expected, not an error; see **hz-meta-xr-operator**.)
 
 ### 8. Navigate & Interact at Runtime
 
@@ -213,9 +213,9 @@ Reach a clear pass/fail conclusion quickly rather than iterating endlessly — s
 - OpenXR quaternion format: `[x, y, z, w]`; `base_space` defaults to `local_floor` for the pose tools.
 - Meta XR Operator (`openxr_*`) uses the **OpenXR** coordinate system (X right, Y up, **Z backward** / -Z forward, right-handed). Unity uses **Y up, Z forward** (left-handed). Convert with `convert_unity_pose_to_openxr` / `convert_openxr_pose_to_unity` (and the `*_position_*` / `*_rotation_*` variants). See **hz-meta-xr-operator-coordinates**.
 
-## Using HZDB (if available)
+## Using metavr docs (if available)
 
-Query HZDB for Oculus VR documentation on VR-specific features (hand tracking, passthrough, spatial anchors, etc.). If unavailable, proceed with general VR knowledge.
+When the exact behavior is uncertain, query current docs before answering: `metavr docs search "<feature>"` (hand tracking, passthrough, spatial anchors, etc.), then `metavr docs fetch <url>` for the full page. If the CLI is unavailable, proceed with general VR knowledge.
 
 ## Troubleshooting
 

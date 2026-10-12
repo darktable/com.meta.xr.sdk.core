@@ -172,6 +172,10 @@ namespace Meta.XR.Editor
             public const string EditorToolsDescription = "Scene manipulation, compilation, testing, and screenshots";
             public const string RuntimeToolsLabel = "Runtime tools";
             public const string RuntimeToolsDescription = "OpenXR layer and live XR session interaction";
+
+            public const string ProxyFallbackHelper =
+                "Muse Code has no `mcp add` command, so Direct SSE can't be registered. " +
+                "This sets up the MCP Proxy transport instead.";
         }
 
         internal static class OpenCode
@@ -242,6 +246,7 @@ namespace Meta.XR.Editor
             public const string ActivateMetaXROperator = "Activate XR Operator";
             public const string Deactivate = "Deactivate";
             public const string InstallSkillsFormat = "Install {0} skills in project";
+            public const string UpdateSkillsFormat = "Update {0} skills in project";
         }
 
         internal static class ConnectionStatus

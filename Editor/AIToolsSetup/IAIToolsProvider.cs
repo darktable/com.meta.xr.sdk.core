@@ -115,6 +115,14 @@ namespace Meta.XR.Editor
         public string ManualInstructions;
 
         /// <summary>
+        /// Optional replacement for the generic "run this in your terminal" caption under the
+        /// command block on the runnable (non-<see cref="ManualOnly"/>) path. Used when the command
+        /// needs explaining — e.g. a service whose command doesn't match the selected transport.
+        /// When null, the wizard uses its default caption.
+        /// </summary>
+        public string HelperText;
+
+        /// <summary>
         /// When false (default), the wizard shows a "Run command" button that auto-registers the
         /// MCP server. When true, the provider can only be set up manually: the wizard shows the
         /// command/path block and the docs link, but no Run button or auto-status.
